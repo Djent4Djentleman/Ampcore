@@ -6,3 +6,8 @@ DerivedData/
 
 # macOS
 .DS_Store
+
+# Xcode user files
+DerivedData/
+*.xcuserstate
+xcuserdata/
