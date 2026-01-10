@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ArtworkWithGlow: View {
     let image: UIImage
