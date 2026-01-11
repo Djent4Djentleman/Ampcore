@@ -1,3 +1,4 @@
+// WaveformCache.swift
 import Foundation
 
 actor WaveformCache {
@@ -10,16 +11,20 @@ actor WaveformCache {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }
     
-    func load(id: UUID) -> [Float]? {
+    func load(id: UUID) async -> [Float]? {
         let url = dir.appendingPathComponent("\(id.uuidString).json")
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode([Float].self, from: data)
+        return await Task.detached(priority: .utility) {
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return try? JSONDecoder().decode([Float].self, from: data)
+        }.value
     }
     
-    func save(_ peaks: [Float], id: UUID) {
+    func save(_ peaks: [Float], id: UUID) async {
         let url = dir.appendingPathComponent("\(id.uuidString).json")
-        if let data = try? JSONEncoder().encode(peaks) {
-            try? data.write(to: url, options: .atomic)
-        }
+        await Task.detached(priority: .utility) {
+            if let data = try? JSONEncoder().encode(peaks) {
+                try? data.write(to: url, options: .atomic)
+            }
+        }.value
     }
 }

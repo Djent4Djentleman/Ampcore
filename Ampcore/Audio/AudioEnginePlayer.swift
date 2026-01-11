@@ -19,6 +19,8 @@ final class AudioEnginePlayer: ObservableObject {
         case one = 2
     }
 
+    // MARK: - Published state (UI)
+
     @Published private(set) var isPlaying = false
     @Published private(set) var nowPlayingTitle = ""
     @Published private(set) var nowPlayingArtist = ""
@@ -26,7 +28,6 @@ final class AudioEnginePlayer: ObservableObject {
     @Published private(set) var currentTime: TimeInterval = 0
     @Published private(set) var duration: TimeInterval = 0
 
-    // 0...1
     @Published var playbackProgress: Double = 0
     @Published var waveformSamples: [Float] = AudioEnginePlayer.makeDefaultWaveform()
 
@@ -40,7 +41,9 @@ final class AudioEnginePlayer: ObservableObject {
 
     var hasLoadedFile: Bool { currentFile != nil }
 
-    // MARK: - Engine
+    // MARK: - Engine / DSP
+
+    private let audioQueue = DispatchQueue(label: "AudioEnginePlayer.audio", qos: .userInitiated)
 
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
@@ -59,43 +62,40 @@ final class AudioEnginePlayer: ObservableObject {
         return AVAudioUnitEffect(audioComponentDescription: desc)
     }()
 
-    // MARK: - Playback state
+    // MARK: - Playback state (audioQueue-only)
 
     private var currentFile: AVAudioFile?
     private var currentStartFrame: AVAudioFramePosition = 0
     private var sampleRate: Double = 44100
 
-    private var tick: AnyCancellable?
-    private var finishCancellable: AnyCancellable?
-
-    // Keep engine operations off the main thread.
-    private let audioQueue = DispatchQueue(label: "ampcore.audio.engine", qos: .userInitiated)
+    private var progressTimer: DispatchSourceTimer?
+    private var scheduleToken: UInt64 = 0
     private var pendingSeekWork: DispatchWorkItem?
 
     private init() {
-        engine.attach(playerNode)
-        engine.attach(eq)
-        engine.attach(toneEQ)
-        engine.attach(limiter)
+        audioQueue.sync {
+            engine.attach(playerNode)
+            engine.attach(eq)
+            engine.attach(toneEQ)
+            engine.attach(limiter)
 
-        engine.connect(playerNode, to: eq, format: nil)
-        engine.connect(eq, to: toneEQ, format: nil)
-        engine.connect(toneEQ, to: limiter, format: nil)
-        engine.connect(limiter, to: engine.mainMixerNode, format: nil)
+            engine.connect(playerNode, to: eq, format: nil)
+            engine.connect(eq, to: toneEQ, format: nil)
+            engine.connect(toneEQ, to: limiter, format: nil)
+            engine.connect(limiter, to: engine.mainMixerNode, format: nil)
 
-        configureEQDefaults()
-        configureToneDefaults()
-        configureLimiterDefaults()
+            configureEQDefaults()
+            configureToneDefaults()
+            configureLimiterDefaults()
 
-        do { try engine.start() }
-        catch { print("Audio engine start error: \(error)") }
+            // Default DSP off
+            eq.bypass = true
+            toneEQ.bypass = true
+            limiter.bypass = true
 
-        finishCancellable = NotificationCenter.default
-            .publisher(for: AudioEnginePlayer.didFinishTrack)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.handleTrackFinished()
-            }
+            do { try engine.start() }
+            catch { print("Audio engine start error: \(error)") }
+        }
     }
 
     // MARK: - Queue API (used by UI)
@@ -136,7 +136,7 @@ final class AudioEnginePlayer: ObservableObject {
     func removeFromQueue(atOffsets: IndexSet) {
         guard !atOffsets.isEmpty else { return }
 
-        let removedIDs: [NSManagedObjectID] = atOffsets.compactMap { idx -> NSManagedObjectID? in
+        let removedIDs: [NSManagedObjectID] = atOffsets.compactMap { idx in
             guard idx >= 0 && idx < queueTrackIDs.count else { return nil }
             return queueTrackIDs[idx]
         }
@@ -147,18 +147,18 @@ final class AudioEnginePlayer: ObservableObject {
         }
         queueTrackIDs = arr
 
-        if let cur = currentTrackID, removedIDs.contains(cur) {
-            currentTrackID = queueTrackIDs.first
-            if let first = queueTrackIDs.first, let ctx = managedObjectContext,
+        if let currentTrackID, removedIDs.contains(currentTrackID) {
+            self.currentTrackID = queueTrackIDs.first
+            if let first = queueTrackIDs.first,
+               let ctx = managedObjectContext,
                let t = try? ctx.existingObject(with: first) as? CDTrack {
                 play(track: t)
             } else {
-                stop()
+                clearQueue()
             }
         }
     }
 
-    // Convenience for legacy call sites
     func removeFromQueue(trackID: NSManagedObjectID) {
         guard let idx = queueTrackIDs.firstIndex(of: trackID) else { return }
         removeFromQueue(atOffsets: IndexSet(integer: idx))
@@ -170,40 +170,61 @@ final class AudioEnginePlayer: ObservableObject {
         stop()
     }
 
-    func nextTrackID() -> NSManagedObjectID? {
-        nextTrackID(whenEnded: false)
-    }
-
     // MARK: - DSP (EQ / Tone / Limiter)
 
     func setEQEnabled(_ enabled: Bool) {
-        eq.bypass = !enabled
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            self.eq.bypass = !enabled
+            for b in self.eq.bands {
+                b.bypass = !enabled
+            }
+        }
+    }
+
+    func isEQEnabled() -> Bool {
+        audioQueue.sync { !eq.bypass }
     }
 
     func applyEQ(preampDB: Float, gainsDB: [Float]) {
-        eq.globalGain = preampDB
-        for i in 0..<min(eq.bands.count, gainsDB.count) {
-            eq.bands[i].gain = gainsDB[i]
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            let maxBoost = max(0, gainsDB.max() ?? 0)
+            let compensated = preampDB - maxBoost
+            self.eq.globalGain = max(-24, min(24, compensated))
+            for i in 0..<min(self.eq.bands.count, gainsDB.count) {
+                self.eq.bands[i].gain = gainsDB[i]
+            }
         }
     }
 
     func setToneEnabled(_ enabled: Bool) {
-        toneEQ.bypass = !enabled
+        audioQueue.async { [weak self] in
+            self?.toneEQ.bypass = !enabled
+        }
+    }
+
+    func isToneEnabled() -> Bool {
+        audioQueue.sync { !toneEQ.bypass }
     }
 
     func applyTone(bassPercent: Float, treblePercent: Float) {
-        // Map -100..100 to -12..12 dB
-        let bassGain = max(-12, min(12, bassPercent / 100 * 12))
-        let trebleGain = max(-12, min(12, treblePercent / 100 * 12))
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            let bassGain = max(-12, min(12, bassPercent / 100 * 12))
+            let trebleGain = max(-12, min(12, treblePercent / 100 * 12))
 
-        if toneEQ.bands.count >= 2 {
-            toneEQ.bands[0].gain = bassGain
-            toneEQ.bands[1].gain = trebleGain
+            if self.toneEQ.bands.count >= 2 {
+                self.toneEQ.bands[0].gain = bassGain
+                self.toneEQ.bands[1].gain = trebleGain
+            }
         }
     }
 
     func setLimiterEnabled(_ enabled: Bool) {
-        limiter.bypass = !enabled
+        audioQueue.async { [weak self] in
+            self?.limiter.bypass = !enabled
+        }
     }
 
     func isLimiterEnabled() -> Bool {
@@ -215,34 +236,41 @@ final class AudioEnginePlayer: ObservableObject {
     func stop() {
         audioQueue.async { [weak self] in
             guard let self else { return }
+            let mixer = self.engine.mainMixerNode
+            let wasVol = mixer.outputVolume
+            mixer.outputVolume = 0.0
             self.playerNode.stop()
+            mixer.outputVolume = wasVol
+            self.currentFile = nil
             self.currentStartFrame = 0
-            self.pendingSeekWork?.cancel()
-            self.pendingSeekWork = nil
+            self.stopProgressTimer()
+
+            self.publish {
+                self.isPlaying = false
+                self.playbackProgress = 0
+                self.currentTime = 0
+                self.duration = 0
+            }
         }
-
-        isPlaying = false
-        tick?.cancel()
-        tick = nil
-
-        playbackProgress = 0
-        currentTime = 0
     }
 
     func pause() {
         audioQueue.async { [weak self] in
-            self?.playerNode.pause()
+            guard let self else { return }
+            self.playerNode.pause()
+            self.publish { self.isPlaying = false }
         }
-        isPlaying = false
     }
 
     func resume() {
-        guard currentFile != nil else { return }
         audioQueue.async { [weak self] in
-            self?.playerNode.play()
+            guard let self else { return }
+            guard self.currentFile != nil else { return }
+            self.playerNode.play()
+            self.startProgressTimer()
+
+            self.publish { self.isPlaying = true }
         }
-        isPlaying = true
-        startProgressTick()
     }
 
     func play(track: CDTrack) {
@@ -267,82 +295,55 @@ final class AudioEnginePlayer: ObservableObject {
         }
     }
 
-    private func playFile(url: URL) throws {
-        let file = try AVAudioFile(forReading: url)
-        currentFile = file
-        sampleRate = file.processingFormat.sampleRate
-        duration = Double(file.length) / max(sampleRate, 1)
+    // MARK: - Seeking (UI)
 
-        playbackProgress = 0
-        currentTime = 0
-        currentStartFrame = 0
-
-        audioQueue.async { [weak self] in
-            guard let self else { return }
-            self.playerNode.stop()
-            self.scheduleFrom(frame: 0)
-            self.playerNode.play()
-        }
-
-        isPlaying = true
-        startProgressTick()
-    }
-
-    /// UI seek helper.
-    /// Accepts either progress (0...1) or seconds (> 1).
+    /// Accepts either progress (0...1) or seconds (> 1). Keeps old call sites stable.
     func seekUI(to value: Double) {
-        guard let file = currentFile else { return }
-
-        // Debounce - commit seek after user settles.
+        // Debounce so quick repeated calls don't thrash the node.
         pendingSeekWork?.cancel()
 
         let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            let sr = max(self.sampleRate, 1)
-
-            let seconds: Double
-            if value <= 1.0001 {
-                seconds = max(0, min(1, value)) * (Double(file.length) / sr)
-            } else {
-                seconds = max(0, min(value, Double(file.length) / sr))
-            }
-
-            let targetFrame = AVAudioFramePosition(seconds * sr)
-
-            self.audioQueue.async { [weak self] in
-                guard let self, let file = self.currentFile else { return }
-
-                self.playerNode.stop()
-                self.currentStartFrame = max(0, min(targetFrame, file.length))
-                self.scheduleFrom(frame: self.currentStartFrame)
-                if self.isPlaying {
-                    self.playerNode.play()
-                }
-            }
+            self?.performSeekUI(to: value)
         }
-
         pendingSeekWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
+        audioQueue.asyncAfter(deadline: .now() + 0.12, execute: work)
     }
 
-    // MARK: - Queue logic
+    private func performSeekUI(to value: Double) {
+        guard let file = currentFile else { return }
 
-    private func handleTrackFinished() {
-        guard let nextID = nextTrackID(whenEnded: true) else {
-            stop()
-            return
+        let wasPlaying = isPlaying
+        let targetSeconds: Double
+        if value >= 0, value <= 1, duration > 1 {
+            targetSeconds = value * duration
+        } else {
+            targetSeconds = max(0, min(value, duration))
         }
-        playFromQueue(id: nextID)
+
+        let sr = max(sampleRate, 1)
+        let maxSeconds = Double(file.length) / sr
+        let clampedSeconds = max(0, min(targetSeconds, maxSeconds))
+        let targetFrame = AVAudioFramePosition(clampedSeconds * sr)
+
+        scheduleToken &+= 1
+        let token = scheduleToken
+
+        playerNode.stop()
+        currentStartFrame = targetFrame
+        scheduleFrom(frame: targetFrame, token: token)
+
+        if wasPlaying {
+            playerNode.play()
+        }
+
+        startProgressTimer()
+        updateProgressOnce()
     }
 
-    private func playFromQueue(id: NSManagedObjectID) {
-        guard let ctx = managedObjectContext,
-              let track = try? ctx.existingObject(with: id) as? CDTrack
-        else {
-            stop()
-            return
-        }
-        play(track: track)
+    // MARK: - Queue navigation
+
+    func nextTrackID() -> NSManagedObjectID? {
+        nextTrackID(whenEnded: false)
     }
 
     func nextTrackID(whenEnded: Bool) -> NSManagedObjectID? {
@@ -397,59 +398,99 @@ final class AudioEnginePlayer: ObservableObject {
         }
     }
 
-    // MARK: - Scheduling / progress
+    // MARK: - File scheduling / progress (audioQueue-only)
 
-    private func scheduleFrom(frame start: AVAudioFramePosition) {
+    private func playFile(url: URL) throws {
+        let file = try AVAudioFile(forReading: url)
+
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+
+            self.currentFile = file
+            self.sampleRate = file.processingFormat.sampleRate
+            let dur = Double(file.length) / max(self.sampleRate, 1)
+
+            self.playerNode.stop()
+            self.currentStartFrame = 0
+
+            self.scheduleToken &+= 1
+            let token = self.scheduleToken
+            self.scheduleFrom(frame: 0, token: token)
+
+            self.playerNode.play()
+            self.startProgressTimer()
+
+            self.publish {
+                self.duration = dur
+                self.playbackProgress = 0
+                self.currentTime = 0
+                self.isPlaying = true
+            }
+        }
+    }
+
+    private func scheduleFrom(frame start: AVAudioFramePosition, token: UInt64) {
         guard let file = currentFile else { return }
 
-        let clampedStart = max(0, min(start, file.length))
-        let remaining = max(AVAudioFrameCount(file.length - clampedStart), 0)
-        if remaining == 0 {
-            DispatchQueue.main.async { [weak self] in self?.stop() }
+        let remainingFrames = max(AVAudioFrameCount(file.length - start), 0)
+        if remainingFrames == 0 {
+            publish { self.isPlaying = false }
             return
         }
 
         playerNode.scheduleSegment(
             file,
-            startingFrame: clampedStart,
-            frameCount: remaining,
+            startingFrame: start,
+            frameCount: remainingFrames,
             at: nil
-        ) {
-            NotificationCenter.default.post(name: AudioEnginePlayer.didFinishTrack, object: nil)
+        ) { [weak self] in
+            guard let self else { return }
+            // Ignore stale completions (e.g. seek reschedules).
+            self.audioQueue.async {
+                guard token == self.scheduleToken else { return }
+                NotificationCenter.default.post(name: AudioEnginePlayer.didFinishTrack, object: nil)
+            }
         }
     }
 
-    private func startProgressTick() {
-        tick?.cancel()
-        tick = Timer.publish(every: 0.05, on: .main, in: .common)
-            .autoconnect()
-            .sink { [weak self] _ in
-                self?.updateProgress()
-            }
+    private func startProgressTimer() {
+        if progressTimer != nil { return }
+
+        let t = DispatchSource.makeTimerSource(queue: audioQueue)
+        t.schedule(deadline: .now(), repeating: 0.05)
+        t.setEventHandler { [weak self] in
+            self?.updateProgressOnce()
+        }
+        progressTimer = t
+        t.resume()
     }
 
-    private func updateProgress() {
-        guard isPlaying else { return }
+    private func stopProgressTimer() {
+        progressTimer?.cancel()
+        progressTimer = nil
+    }
 
-        audioQueue.async { [weak self] in
-            guard let self, let file = self.currentFile else { return }
-            guard
-                let nodeTime = self.playerNode.lastRenderTime,
-                let playerTime = self.playerNode.playerTime(forNodeTime: nodeTime)
-            else { return }
+    private func updateProgressOnce() {
+        guard let file = currentFile else { return }
+        guard
+            let nodeTime = playerNode.lastRenderTime,
+            let playerTime = playerNode.playerTime(forNodeTime: nodeTime)
+        else { return }
 
-            let playedFrames = AVAudioFramePosition(playerTime.sampleTime)
-            let absoluteFrame = self.currentStartFrame + playedFrames
+        let playedFrames = AVAudioFramePosition(playerTime.sampleTime)
+        let absoluteFrame = currentStartFrame + playedFrames
 
-            let progress = min(max(Double(absoluteFrame) / Double(max(file.length, 1)), 0), 1)
-            let time = Double(absoluteFrame) / max(self.sampleRate, 1)
+        let p = min(max(Double(absoluteFrame) / Double(max(file.length, 1)), 0), 1)
+        let t = Double(absoluteFrame) / max(sampleRate, 1)
 
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.playbackProgress = progress
-                self.currentTime = time
-            }
+        publish {
+            self.playbackProgress = p
+            self.currentTime = t
         }
+    }
+
+    private func publish(_ block: @escaping () -> Void) {
+        DispatchQueue.main.async(execute: block)
     }
 
     // MARK: - Waveform
@@ -480,7 +521,7 @@ final class AudioEnginePlayer: ObservableObject {
         }
     }
 
-    // MARK: - Defaults
+    // MARK: - DSP defaults
 
     private func configureEQDefaults() {
         let freqs: [Float] = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000]
@@ -490,7 +531,7 @@ final class AudioEnginePlayer: ObservableObject {
             b.frequency = freqs[i]
             b.bandwidth = 1.0
             b.gain = 0
-            b.bypass = false
+            b.bypass = true
         }
         eq.globalGain = 0
     }
