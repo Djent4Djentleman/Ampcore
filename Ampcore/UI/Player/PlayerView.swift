@@ -5,6 +5,7 @@ import UIKit
 
 struct PlayerView: View {
     @EnvironmentObject private var env: AppEnvironment
+    @Environment(\.colorScheme) private var envScheme
     @Environment(\.managedObjectContext) private var moc
     
     @State private var isScrubbing = false
@@ -30,14 +31,13 @@ struct PlayerView: View {
     
     var body: some View {
         VStack(spacing: 14) {
-            topBar
             coverBlock
-            
+
             if hasTrack {
                 modesBlock
-                
                 waveformContainer
-                
+                    .padding(.top, 26)
+                    .padding(.bottom, 10)
                 timeBlock
                 sleepStatusBlock
             } else {
@@ -53,6 +53,7 @@ struct PlayerView: View {
         }
         .padding(.horizontal, 16)
         .padding(.top, 10)
+        .padding(.bottom, 8)
         .background(backgroundView.ignoresSafeArea())
         .gesture(playerGestures)
         .confirmationDialog("Sleep timer", isPresented: $showTimerDialog) {
@@ -81,62 +82,47 @@ struct PlayerView: View {
     
     // MARK: - Top bar
     
-    private var topBar: some View {
-        HStack(spacing: 16) {
-            Button { env.navigation.showLibrary() } label: {
-                Image(systemName: "music.note.list")
-            }
-            
-            Button { env.navigation.showPlayer() } label: {
-                Image(systemName: "play.circle.fill")
-            }
-            
-            Button { env.navigation.showLibrary() } label: {
-                Image(systemName: "magnifyingglass")
-            }
-            
-            Spacer()
-            
-            Button { showSettingsSheet = true } label: {
-                Image(systemName: "gearshape")
-            }
-        }
-        .font(.system(size: 18, weight: .semibold))
-        .foregroundStyle(.white.opacity(0.92))
-    }
-    
+    private var topBar: some View { EmptyView() }
+
     // MARK: - Cover
     
+        // MARK: - Cover
+
     private var coverBlock: some View {
-        let side = min(UIScreen.main.bounds.width - 32, 320)
-        
-        return ZStack(alignment: .bottomLeading) {
-            coverImage
-                .frame(width: side, height: side)
+        GeometryReader { geo in
+            let side = min(geo.size.width - 32, 360)
+
+            ZStack(alignment: .bottomLeading) {
+                coverImage
+                    .frame(width: side, height: side)
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .shadow(color: .black.opacity(0.6), radius: 28, x: 0, y: 16)
+
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.75)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
                 .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                .shadow(color: .black.opacity(0.6), radius: 28, x: 0, y: 16)
-            
-            LinearGradient(
-                colors: [.clear, .black.opacity(0.75)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-            
-            VStack(alignment: .leading, spacing: 6) {
-                Text(env.player.nowPlayingTitle.isEmpty ? "—" : env.player.nowPlayingTitle)
-                    .font(.headline.weight(.semibold))
-                Text(env.player.nowPlayingArtist)
-                    .font(.subheadline)
-                    .opacity(0.75)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(trackTitle)
+                        .font(.headline.weight(.semibold))
+                        .lineLimit(1)
+                    Text(trackSubtitle)
+                        .font(.subheadline)
+                        .opacity(0.75)
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.white)
+                .padding(16)
             }
-            .foregroundStyle(.white)
-            .padding(16)
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity)
+        .frame(height: 380)
     }
-    
-    // MARK: - Modes
+
+// MARK: - Modes
     
     private var modesBlock: some View {
         HStack(spacing: 18) {
@@ -170,6 +156,7 @@ struct PlayerView: View {
                 transportOverlay
                     .opacity(isWaveScrubbing ? 0 : 1)
                     .scaleEffect(isWaveScrubbing ? 0.96 : 1)
+                    .animation(nil, value: isWaveScrubbing)
             }
             .gesture(waveformScrubGesture(width: geo.size.width))
         }
@@ -199,16 +186,14 @@ struct PlayerView: View {
     private func waveformScrubGesture(width: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { v in
-                let w = max(width, 1)
-                let p = min(max(Double(v.location.x / w), 0), 1)
-                if !isWaveScrubbing { isWaveScrubbing = true }
-                if !isScrubbing { isScrubbing = true }
-                scrubProgress = p
+                isWaveScrubbing = true
+                isScrubbing = true
+                scrubProgress = min(max(Double(v.location.x / max(width, 1)), 0), 1)
             }
             .onEnded { _ in
                 isWaveScrubbing = false
                 isScrubbing = false
-                env.player.seekUI(to: scrubProgress) // progress 0...1
+                env.player.seekUI(to: scrubProgress)
             }
     }
     
@@ -258,7 +243,22 @@ struct PlayerView: View {
         return try? moc.existingObject(with: id) as? CDTrack
     }
     
-    private var coverImage: some View {
+    
+    private var trackTitle: String {
+        let t = env.player.nowPlayingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? "—" : t
+    }
+
+    private var trackSubtitle: String {
+        let artist = (env.player.nowPlayingArtist).trimmingCharacters(in: .whitespacesAndNewlines)
+        let album = (track?.album ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if artist.isEmpty && album.isEmpty { return "" }
+        if artist.isEmpty { return album }
+        if album.isEmpty { return artist }
+        return "\(artist) - \(album)"
+    }
+
+private var coverImage: some View {
         Group {
             if let d = track?.artworkData, let img = UIImage(data: d) {
                 Image(uiImage: img).resizable().scaledToFill()
@@ -268,10 +268,31 @@ struct PlayerView: View {
         }
     }
     
-    private var backgroundView: some View {
+    
+
+    
+    private var cs: ColorScheme {
+        switch env.settings.theme {
+        case .system:
+            return envScheme
+        case .light:
+            return .light
+        case .dark:
+            return .dark
+        }
+    }
+
+private var backgroundGradientColors: [Color] {
+        if cs == .light {
+            return [Color.white.opacity(0.65), Color.white.opacity(0.96)]
+        } else {
+            return [Color.black.opacity(0.55), Color.black.opacity(0.92)]
+        }
+    }
+private var backgroundView: some View {
         ZStack {
             coverImage.blur(radius: 70).opacity(0.35)
-            LinearGradient(colors: [.black.opacity(0.55), .black.opacity(0.92)], startPoint: .top, endPoint: .bottom)
+            LinearGradient(colors: backgroundGradientColors, startPoint: .top, endPoint: .bottom)
         }
     }
     
@@ -353,80 +374,120 @@ private struct WaveformProgressView: View {
     let progress: Double
     let isScrubbing: Bool
 
+    // Visual tuning (Poweramp-like)
+    private let yPad: CGFloat = 8
+    private let barWidth: CGFloat = 4
+    private let minBarHeight: CGFloat = 2
+
+    // Bars density (lower = fewer bars)
+    private let barsPerPoint: CGFloat = 1.0 / 7.0
+
+    // Keep headroom so bars never hit top/bottom
+    private let headroom: CGFloat = 0.82
+
+    // Shape curve: >1 keeps mids lower, improves contrast
+    private let gamma: CGFloat = 1.25
+
+    private func downsamplePeaks(_ input: [Float], to count: Int) -> [Float] {
+        guard !input.isEmpty, count > 0 else { return [] }
+        if input.count <= count { return input.map { abs($0) } }
+
+        let n = input.count
+        let step = Double(n) / Double(count)
+
+        var out: [Float] = []
+        out.reserveCapacity(count)
+
+        for i in 0..<count {
+            let start = Int(Double(i) * step)
+            let end = min(n, Int(Double(i + 1) * step))
+            if start >= end {
+                out.append(abs(input[min(start, n - 1)]))
+                continue
+            }
+
+            var peak: Float = 0
+            for j in start..<end {
+                let v = abs(input[j])
+                if v > peak { peak = v }
+            }
+            out.append(peak)
+        }
+        return out
+    }
+
+    private func percentileRef(_ data: [Float], p: Double) -> Float {
+        guard !data.isEmpty else { return 1 }
+        let clampedP = min(max(p, 0), 1)
+        let sorted = data.sorted()
+        let idx = Int(round(Double(sorted.count - 1) * clampedP))
+        return sorted[min(max(idx, 0), sorted.count - 1)]
+    }
+
+    private func barHeight(for peak: Float, usableH: CGFloat, ref: Float) -> CGFloat {
+        let denom = max(ref, 0.0001)
+        let n = CGFloat(min(max(peak / denom, 0), 1))
+        let shaped = pow(n, gamma)
+        let target = usableH * headroom * shaped
+        return max(minBarHeight, min(usableH * headroom, target))
+    }
+
     var body: some View {
-        Canvas { context, size in
+        Canvas { ctx, size in
             let w = size.width
             let h = size.height
-            let insetX: CGFloat = 10
-            let insetY: CGFloat = 10
-            let innerW = max(w - insetX * 2, 1)
-            let innerH = max(h - insetY * 2, 1)
 
-            let count = max(samples.count, 1)
-            let step = innerW / CGFloat(count)
-            let barW = max(1, step * 0.7)
-            let radius = barW * 0.5
+            let usableH = max(0, h - yPad * 2)
 
-            let clamped = min(max(progress, 0), 1)
-            let filledCount = Int((CGFloat(clamped) * CGFloat(count)).rounded(.down))
+            // Stable layout: compute a fixed bar grid that fills width exactly.
+            let desired = max(50, min(220, Int(round(w * barsPerPoint))))
+            let nBars = max(1, desired)
+            let step = w / CGFloat(nBars) // fills exactly
+            let xInset = max(0, (step - barWidth) * 0.5)
 
-            func barRect(_ i: Int, amp: CGFloat) -> CGRect {
-                let x = insetX + CGFloat(i) * step + (step - barW) * 0.5
-                let bh = max(2, innerH * amp)
-                let y = insetY + (innerH - bh) * 0.5
-                return CGRect(x: x, y: y, width: barW, height: bh)
+            let peaks = downsamplePeaks(samples, to: nBars)
+            let ref = percentileRef(peaks, p: 0.90)
+
+            let clampedP = min(max(progress, 0), 1)
+            let progressX = w * clampedP
+
+            var barsPath = Path()
+            for i in 0..<peaks.count {
+                let barH = barHeight(for: peaks[i], usableH: usableH, ref: ref)
+                let x = CGFloat(i) * step + xInset
+                let y = yPad + (usableH - barH) * 0.5
+
+                let r = CGRect(x: x, y: y, width: barWidth, height: barH)
+                let corner = CGSize(width: barWidth * 0.5, height: barWidth * 0.5)
+                barsPath.addRoundedRect(in: r, cornerSize: corner)
             }
 
-            // Background bars
-            var bgPath = Path()
-            bgPath.addRoundedRect(in: CGRect(x: 0, y: 0, width: w, height: h), cornerSize: CGSize(width: 16, height: 16))
-            context.clip(to: bgPath)
+            // Unplayed = light
+            ctx.fill(barsPath, with: .color(.white.opacity(0.55)))
 
-            for i in 0..<count {
-                let amp = CGFloat(min(max(samples[safe: i] ?? 0, 0), 1))
-                let r = barRect(i, amp: amp)
-                let p = Path(roundedRect: r, cornerRadius: radius)
-                context.fill(p, with: .color(.white.opacity(0.18)))
+            // Played = dark (masked to left)
+            ctx.drawLayer { layer in
+                var clip = Path()
+                clip.addRect(CGRect(x: 0, y: 0, width: max(0, progressX), height: h))
+                layer.clip(to: clip)
+                layer.fill(barsPath, with: .color(.black.opacity(0.55)))
             }
 
-            // Foreground bars (up to progress)
-            let fgOpacity: Double = isScrubbing ? 0.85 : 0.65
-            if filledCount > 0 {
-                for i in 0..<min(filledCount, count) {
-                    let amp = CGFloat(min(max(samples[safe: i] ?? 0, 0), 1))
-                    let r = barRect(i, amp: amp)
-                    let p = Path(roundedRect: r, cornerRadius: radius)
-                    context.fill(p, with: .color(.white.opacity(fgOpacity)))
-                }
+            // Stroke: thin outline per bar
+            ctx.stroke(barsPath, with: .color(.black.opacity(0.75)), lineWidth: 0.6)
+
+            // Cursor: black, thin, only while scrubbing
+            if isScrubbing {
+                var cursor = Path()
+                cursor.addRect(CGRect(x: max(0, progressX - 0.5), y: yPad, width: 1, height: usableH))
+                ctx.fill(cursor, with: .color(.black.opacity(0.9)))
             }
-
-            // Playhead
-            let progressX = insetX + innerW * CGFloat(clamped)
-            let lineRect = CGRect(x: max(insetX, min(progressX, insetX + innerW)) - 1,
-                                  y: insetY,
-                                  width: 2,
-                                  height: innerH)
-            let linePath = Path(lineRect)
-            context.fill(linePath, with: .color(.white.opacity(isScrubbing ? 0.9 : 0.55)))
-
-            // Background plate
-            let plate = Path(roundedRect: CGRect(x: 0, y: 0, width: w, height: h),
-                             cornerRadius: 16)
-            context.stroke(plate, with: .color(.white.opacity(0.06)), lineWidth: 0)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-    }
-}
-
-private extension Array where Element == Float {
-    subscript(safe index: Int) -> Float? {
-        guard index >= 0 && index < count else { return nil }
-        return self[index]
     }
 }
 
 // MARK: - RepeatMode
+
 
 private enum RepeatMode: Int {
     case off, all, one
