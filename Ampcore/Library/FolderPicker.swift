@@ -1,30 +1,40 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct FolderPicker: UIViewControllerRepresentable {
-    var onPick: (URL?) -> Void
+struct FolderPicker: View {
     
-    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder])
-        picker.delegate = context.coordinator
-        picker.allowsMultipleSelection = false
-        return picker
-    }
+    @State private var isPickingFolder = false
+    let onPicked: (URL) -> Void
     
-    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
-    
-    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
-    
-    final class Coordinator: NSObject, UIDocumentPickerDelegate {
-        let onPick: (URL?) -> Void
-        init(onPick: @escaping (URL?) -> Void) { self.onPick = onPick }
-        
-        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            onPick(urls.first)
+    var body: some View {
+        Button {
+            isPickingFolder = true
+        } label: {
+            Label("Select folder", systemImage: "folder")
         }
-        
-        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-            onPick(nil)
+        .fileImporter(
+            isPresented: $isPickingFolder,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                
+                // Activate security-scoped access
+                guard url.startAccessingSecurityScopedResource() else {
+                    print("❌ Failed to access security-scoped resource")
+                    return
+                }
+                
+                defer { url.stopAccessingSecurityScopedResource() }
+                
+                // Pass URL up (FolderAccess will store bookmark)
+                onPicked(url)
+                
+            case .failure(let error):
+                print("❌ Folder picker error:", error)
+            }
         }
     }
 }

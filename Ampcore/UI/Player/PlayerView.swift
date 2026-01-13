@@ -32,7 +32,7 @@ struct PlayerView: View {
     var body: some View {
         VStack(spacing: 14) {
             coverBlock
-
+            
             if hasTrack {
                 modesBlock
                 waveformContainer
@@ -83,46 +83,42 @@ struct PlayerView: View {
     // MARK: - Top bar
     
     private var topBar: some View { EmptyView() }
-
+    
     // MARK: - Cover
     
-        // MARK: - Cover
-
+    // MARK: - Cover
+    
     private var coverBlock: some View {
-        GeometryReader { geo in
-            let side = min(geo.size.width - 32, 360)
-
-            ZStack(alignment: .bottomLeading) {
-                coverImage
-                    .frame(width: side, height: side)
-                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                    .shadow(color: .black.opacity(0.6), radius: 28, x: 0, y: 16)
-
-                LinearGradient(
-                    colors: [.clear, .black.opacity(0.75)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(trackTitle)
-                        .font(.headline.weight(.semibold))
-                        .lineLimit(1)
-                    Text(trackSubtitle)
-                        .font(.subheadline)
-                        .opacity(0.75)
-                        .lineLimit(1)
-                }
-                .foregroundStyle(.white)
-                .padding(16)
+        ZStack(alignment: .bottomLeading) {
+            coverImage
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+            
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.75)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            
+            VStack(alignment: .leading, spacing: 6) {
+                Text(trackTitle)
+                    .font(.headline.weight(.semibold))
+                    .lineLimit(1)
+                Text(trackSubtitle)
+                    .font(.subheadline)
+                    .opacity(0.75)
+                    .lineLimit(1)
             }
-            .frame(maxWidth: .infinity)
+            .foregroundStyle(.white)
+            .padding(16)
         }
-        .frame(height: 380)
+        .frame(maxWidth: .infinity)
+        .aspectRatio(1, contentMode: .fit) // Square by width
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .shadow(color: .black.opacity(0.6), radius: 28, x: 0, y: 16)
     }
-
-// MARK: - Modes
+    
+    // MARK: - Modes
     
     private var modesBlock: some View {
         HStack(spacing: 18) {
@@ -184,16 +180,23 @@ struct PlayerView: View {
     }
     
     private func waveformScrubGesture(width: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 0)
+        DragGesture(minimumDistance: 0, coordinateSpace: .local)
             .onChanged { v in
+                // Scrub UI must win over playback updates (Poweramp-style).
                 isWaveScrubbing = true
                 isScrubbing = true
-                scrubProgress = min(max(Double(v.location.x / max(width, 1)), 0), 1)
+                
+                let p = Double(v.location.x / max(width, 1))
+                scrubProgress = min(max(p, 0), 1)
             }
             .onEnded { _ in
-                isWaveScrubbing = false
-                isScrubbing = false
+                // Seek first, then release UI lock after a tiny delay to prevent snap-back.
                 env.player.seekUI(to: scrubProgress)
+                
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                    isWaveScrubbing = false
+                    isScrubbing = false
+                }
             }
     }
     
@@ -208,7 +211,7 @@ struct PlayerView: View {
         .font(.caption2.monospacedDigit())
         .foregroundStyle(.white.opacity(0.75))
     }
-
+    
     private var sleepStatusBlock: some View {
         Group {
             if let d = sleepEndDate {
@@ -231,7 +234,7 @@ struct PlayerView: View {
             }
         }
     }
-
+    
     // MARK: - Helpers
     
     private var hasTrack: Bool {
@@ -248,7 +251,7 @@ struct PlayerView: View {
         let t = env.player.nowPlayingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         return t.isEmpty ? "—" : t
     }
-
+    
     private var trackSubtitle: String {
         let artist = (env.player.nowPlayingArtist).trimmingCharacters(in: .whitespacesAndNewlines)
         let album = (track?.album ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -257,8 +260,8 @@ struct PlayerView: View {
         if album.isEmpty { return artist }
         return "\(artist) - \(album)"
     }
-
-private var coverImage: some View {
+    
+    private var coverImage: some View {
         Group {
             if let d = track?.artworkData, let img = UIImage(data: d) {
                 Image(uiImage: img).resizable().scaledToFill()
@@ -269,7 +272,7 @@ private var coverImage: some View {
     }
     
     
-
+    
     
     private var cs: ColorScheme {
         switch env.settings.theme {
@@ -281,15 +284,15 @@ private var coverImage: some View {
             return .dark
         }
     }
-
-private var backgroundGradientColors: [Color] {
+    
+    private var backgroundGradientColors: [Color] {
         if cs == .light {
             return [Color.white.opacity(0.65), Color.white.opacity(0.96)]
         } else {
             return [Color.black.opacity(0.55), Color.black.opacity(0.92)]
         }
     }
-private var backgroundView: some View {
+    private var backgroundView: some View {
         ZStack {
             coverImage.blur(radius: 70).opacity(0.35)
             LinearGradient(colors: backgroundGradientColors, startPoint: .top, endPoint: .bottom)
@@ -320,12 +323,12 @@ private var backgroundView: some View {
         guard let prev = resolvePrevTrack() else { return }
         env.player.play(track: prev)
     }
-
+    
     private func resolveNextTrack() -> CDTrack? {
         guard let id = env.player.nextTrackID() else { return nil }
         return try? moc.existingObject(with: id) as? CDTrack
     }
-
+    
     private func resolvePrevTrack() -> CDTrack? {
         guard let id = env.player.prevTrackID() else { return nil }
         return try? moc.existingObject(with: id) as? CDTrack
@@ -373,31 +376,31 @@ private struct WaveformProgressView: View {
     let samples: [Float]
     let progress: Double
     let isScrubbing: Bool
-
+    
     // Visual tuning (Poweramp-like)
     private let yPad: CGFloat = 8
     private let barWidth: CGFloat = 4
     private let minBarHeight: CGFloat = 2
-
+    
     // Bars density (lower = fewer bars)
     private let barsPerPoint: CGFloat = 1.0 / 7.0
-
+    
     // Keep headroom so bars never hit top/bottom
     private let headroom: CGFloat = 0.82
-
+    
     // Shape curve: >1 keeps mids lower, improves contrast
     private let gamma: CGFloat = 1.25
-
+    
     private func downsamplePeaks(_ input: [Float], to count: Int) -> [Float] {
         guard !input.isEmpty, count > 0 else { return [] }
         if input.count <= count { return input.map { abs($0) } }
-
+        
         let n = input.count
         let step = Double(n) / Double(count)
-
+        
         var out: [Float] = []
         out.reserveCapacity(count)
-
+        
         for i in 0..<count {
             let start = Int(Double(i) * step)
             let end = min(n, Int(Double(i + 1) * step))
@@ -405,7 +408,7 @@ private struct WaveformProgressView: View {
                 out.append(abs(input[min(start, n - 1)]))
                 continue
             }
-
+            
             var peak: Float = 0
             for j in start..<end {
                 let v = abs(input[j])
@@ -415,7 +418,7 @@ private struct WaveformProgressView: View {
         }
         return out
     }
-
+    
     private func percentileRef(_ data: [Float], p: Double) -> Float {
         guard !data.isEmpty else { return 1 }
         let clampedP = min(max(p, 0), 1)
@@ -423,7 +426,7 @@ private struct WaveformProgressView: View {
         let idx = Int(round(Double(sorted.count - 1) * clampedP))
         return sorted[min(max(idx, 0), sorted.count - 1)]
     }
-
+    
     private func barHeight(for peak: Float, usableH: CGFloat, ref: Float) -> CGFloat {
         let denom = max(ref, 0.0001)
         let n = CGFloat(min(max(peak / denom, 0), 1))
@@ -431,40 +434,40 @@ private struct WaveformProgressView: View {
         let target = usableH * headroom * shaped
         return max(minBarHeight, min(usableH * headroom, target))
     }
-
+    
     var body: some View {
         Canvas { ctx, size in
             let w = size.width
             let h = size.height
-
+            
             let usableH = max(0, h - yPad * 2)
-
+            
             // Stable layout: compute a fixed bar grid that fills width exactly.
             let desired = max(50, min(220, Int(round(w * barsPerPoint))))
             let nBars = max(1, desired)
             let step = w / CGFloat(nBars) // fills exactly
             let xInset = max(0, (step - barWidth) * 0.5)
-
+            
             let peaks = downsamplePeaks(samples, to: nBars)
             let ref = percentileRef(peaks, p: 0.90)
-
+            
             let clampedP = min(max(progress, 0), 1)
             let progressX = w * clampedP
-
+            
             var barsPath = Path()
             for i in 0..<peaks.count {
                 let barH = barHeight(for: peaks[i], usableH: usableH, ref: ref)
                 let x = CGFloat(i) * step + xInset
                 let y = yPad + (usableH - barH) * 0.5
-
+                
                 let r = CGRect(x: x, y: y, width: barWidth, height: barH)
                 let corner = CGSize(width: barWidth * 0.5, height: barWidth * 0.5)
                 barsPath.addRoundedRect(in: r, cornerSize: corner)
             }
-
+            
             // Unplayed = light
             ctx.fill(barsPath, with: .color(.white.opacity(0.55)))
-
+            
             // Played = dark (masked to left)
             ctx.drawLayer { layer in
                 var clip = Path()
@@ -472,10 +475,10 @@ private struct WaveformProgressView: View {
                 layer.clip(to: clip)
                 layer.fill(barsPath, with: .color(.black.opacity(0.55)))
             }
-
+            
             // Stroke: thin outline per bar
             ctx.stroke(barsPath, with: .color(.black.opacity(0.75)), lineWidth: 0.6)
-
+            
             // Cursor: black, thin, only while scrubbing
             if isScrubbing {
                 var cursor = Path()

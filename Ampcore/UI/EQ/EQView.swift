@@ -5,36 +5,22 @@ struct EQView: View {
     
     private let ink = Color.black
     
-    @State private var eqEnabled = true
-    @State private var toneEnabled = false
-    @State private var limitEnabled = false
-    
-    @State private var preset: Preset = .flat
-    
-    // ✅ 10 контролов: Pre + 31..8K
-    @State private var bands: [EQBand] = [
-        .init(label: "Pre", value: 0, min: -12, max: 12),
-        .init(label: "31",  value: 0, min: -12, max: 12),
-        .init(label: "62",  value: 0, min: -12, max: 12),
-        .init(label: "125", value: 0, min: -12, max: 12),
-        .init(label: "250", value: 0, min: -12, max: 12),
-        .init(label: "500", value: 0, min: -12, max: 12),
-        .init(label: "1K",  value: 0, min: -12, max: 12),
-        .init(label: "2K",  value: 0, min: -12, max: 12),
-        .init(label: "4K",  value: 0, min: -12, max: 12),
-        .init(label: "8K",  value: 0, min: -12, max: 12)
-    ]
-    
-    @State private var bass: Double = 0
-    @State private var treble: Double = 0
-    
     @State private var scrollProxy: ScrollViewProxy?
     @State private var focusedIndex: Int = 0
+    
+    @State private var showSavePreset: Bool = false
+    @State private var savePresetName: String = ""
+    
+    @State private var dspWorkItem: DispatchWorkItem?
+    
+    private let bandLabels: [String] = ["Pre","31","62","125","250","500","1K","2K","4K","8K"]
+    private let bandRange: ClosedRange<Double> = -12...12
+    
+    private var store: EQStore { env.eqStore }
     
     var body: some View {
         NavigationStack {
             VStack(spacing: 12) {
-                topRow
                 slidersRow
                 
                 responsePanel
@@ -50,93 +36,42 @@ struct EQView: View {
             .navigationTitle("EQ")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
-                limitEnabled = env.player.isLimiterEnabled()
-                preset = .flat
-                applyPreset(.flat)
+                focusedIndex = min(max(focusedIndex, 0), bandLabels.count - 1)
                 syncDSP()
             }
-            
-            // ✅ любой чендж => syncDSP
-            .onChange(of: bands) { _, _ in syncDSP() }
-            .onChange(of: eqEnabled) { _, _ in
-                if !eqEnabled {
-                    toneEnabled = false
-                    limitEnabled = false
+            .onChange(of: store.snapshot.eqEnabled) { _, newValue in
+                if !newValue {
+                    store.snapshot.toneEnabled = false
+                    store.snapshot.limiterEnabled = false
                 }
-                syncDSP()
+                scheduleDSP()
             }
-            .onChange(of: toneEnabled) { _, _ in syncDSP() }
-            .onChange(of: limitEnabled) { _, _ in syncDSP() }
-            .onChange(of: bass) { _, _ in syncDSP() }
-            .onChange(of: treble) { _, _ in syncDSP() }
+            .onChange(of: store.snapshot.toneEnabled) { _, _ in scheduleDSP() }
+            .onChange(of: store.snapshot.limiterEnabled) { _, _ in scheduleDSP() }
+            .onChange(of: store.snapshot.bass) { _, _ in scheduleDSP() }
+            .onChange(of: store.snapshot.treble) { _, _ in scheduleDSP() }
+            .alert("Save Preset", isPresented: $showSavePreset) {
+                TextField("Name", text: $savePresetName)
+                Button("Save") {
+                    store.saveCurrentAsUserPreset(name: savePresetName)
+                    savePresetName = ""
+                }
+                Button("Cancel", role: .cancel) { savePresetName = "" }
+            } message: {
+                Text("Create a new preset from current settings.")
+            }
         }
     }
     
-    // MARK: - DSP sync
-    
-    private func syncDSP() {
-        env.player.setEQEnabled(eqEnabled)
-        
-        // preamp = bands[0], gains = bands[1...]
-        let pre = Float(bands.first?.value ?? 0)
-        let gains = bands.dropFirst().map { Float($0.value) }
-        env.player.applyEQ(preampDB: pre, gainsDB: gains)
-        
-        env.player.setToneEnabled(eqEnabled && toneEnabled)
-        env.player.applyTone(bassPercent: Float(bass), treblePercent: Float(treble))
-        
-        // Limiter only when EQ enabled
-        env.player.setLimiterEnabled(eqEnabled && limitEnabled)
-    }
-    
-    // MARK: - Top
-    
-    private var topRow: some View {
-        HStack(spacing: 12) {
-            Text("EQ")
-                .font(.headline)
-                .foregroundStyle(ink)
-            
-            Spacer()
-            
-            PressButton(isOn: eqEnabled, titleOn: "On", titleOff: "Off") {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    eqEnabled.toggle()
-                }
-            }
-            .frame(width: 86, height: 34)
-            
-            Menu {
-                Picker("Preset", selection: $preset) {
-                    ForEach(Preset.allCases) { p in
-                        Text(p.title).tag(p)
-                    }
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    Text(preset.title)
-                        .foregroundStyle(ink)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
-                    
-                    Image(systemName: "chevron.down")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(ink.opacity(0.7))
-                }
-                // ✅ фиксируем ширину, чтобы названия пресетов не "прыгали" и не вылезали
-                .frame(width: 210, alignment: .center)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(.thinMaterial, in: Capsule())
-                .overlay(Capsule().stroke(ink.opacity(0.25), lineWidth: 1))
-            }
-            .onChange(of: preset) { _, new in
-                applyPreset(new)
-                syncDSP()
-            }
+    private var currentPresetTitle: String {
+        let id = store.snapshot.selectedPresetId
+        if let builtIn = BuiltInEQPreset.allCases.first(where: { $0.id == id }) {
+            return builtIn.title
         }
-        .padding(.horizontal, 16)
+        if let user = store.userPresets.first(where: { $0.id == id }) {
+            return user.name
+        }
+        return "Custom"
     }
     
     // MARK: - Sliders
@@ -144,91 +79,108 @@ struct EQView: View {
     private var slidersRow: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: true) {
-                HStack(spacing: 12) {
-                    ForEach(Array(bands.enumerated()), id: \.offset) { idx, _ in
-                        VStack(spacing: 8) {
+                HStack(spacing: 3) {
+                    ForEach(0..<bandLabels.count, id: \.self) { idx in
+                        VStack(spacing: 10) {
                             VerticalEQSlider(
                                 value: Binding(
-                                    get: { bands[idx].value },
+                                    get: { store.snapshot.bandValues[safe: idx] ?? 0 },
                                     set: { v in
-                                        bands[idx].value = v
+                                        setBand(idx: idx, value: v)
                                         focusedIndex = idx
+                                        scheduleDSP()
                                     }
                                 ),
-                                range: bands[idx].min...bands[idx].max,
-                                enabled: eqEnabled,
+                                range: bandRange,
+                                enabled: store.snapshot.eqEnabled,
                                 ink: ink
                             )
-                            // ✅ чуть короче, чтобы не вылезало
-                            .frame(width: 46, height: 210)
+                            .frame(width: 34, height: 210)
                             
-                            Text(bands[idx].label)
+                            Text(bandLabels[idx])
                                 .font(.caption2.weight(.semibold))
-                                .foregroundStyle(ink.opacity(eqEnabled ? 0.9 : 0.35))
+                                .foregroundStyle(ink.opacity(store.snapshot.eqEnabled ? 0.9 : 0.35))
+                                .padding(.top, 2)
                             
-                            Text(String(format: "%.1f", bands[idx].value))
+                            Text(String(format: "%.1f", store.snapshot.bandValues[safe: idx] ?? 0))
                                 .font(.caption2)
-                                .foregroundStyle(ink.opacity(eqEnabled ? 0.65 : 0.25))
+                                .foregroundStyle(ink.opacity(store.snapshot.eqEnabled ? 0.65 : 0.25))
                         }
-                        .frame(width: 54)
+                        .frame(width: 40)
                         .id(idx)
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 2)
             }
             .onAppear { scrollProxy = proxy }
         }
     }
     
-    // MARK: - Response panel + overlay scroller
+    private func setBand(idx: Int, value: Double) {
+        if store.snapshot.bandValues.count != bandLabels.count {
+            store.snapshot.bandValues = store.normalized10(store.snapshot.bandValues)
+        }
+        guard store.snapshot.bandValues.indices.contains(idx) else { return }
+        store.snapshot.bandValues[idx] = min(max(value, bandRange.lowerBound), bandRange.upperBound)
+    }
+    
+    // MARK: - Response panel
     
     private var responsePanel: some View {
-        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
-        
-        return ZStack {
-            shape
-                .fill(.thinMaterial)
-                .overlay(shape.stroke(ink.opacity(0.12), lineWidth: 1))
-            
-            // ✅ диаграмма всегда чёрная, не вылезает за края из-за clip ниже
+        ZStack {
             responseCurve
-                .padding(.horizontal, 18)
-            
-            // ✅ “liquid glass” скроллер — почти прозрачный, по размеру почти как поле
+                .padding(.horizontal, 16)
+
             glassScroller
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
         }
         .frame(height: 74)
-        .opacity(0.95)
-        .clipShape(shape) // ✅ главный фикс "не вылезает за края"
+        .opacity(store.snapshot.eqEnabled ? 1.0 : 0.45)
     }
-    
+
     private var responseCurve: some View {
         GeometryReader { geo in
             let w = geo.size.width
             let h = geo.size.height
             let points = curvePoints(width: w, height: h)
             
-            Path { p in
-                guard let first = points.first else { return }
-                p.move(to: first)
-                for pt in points.dropFirst() { p.addLine(to: pt) }
+            ZStack {
+                Rectangle()
+                    .fill(ink.opacity(0.22))
+                    .frame(height: 1)
+                    .position(x: w * 0.5, y: h * 0.5)
+                
+                Path { p in
+                    guard points.count >= 2 else { return }
+                    p.move(to: points[0])
+                    
+                    for i in 1..<points.count {
+                        let prev = points[i - 1]
+                        let cur = points[i]
+                        let mid = CGPoint(x: (prev.x + cur.x) * 0.5, y: (prev.y + cur.y) * 0.5)
+                        p.addQuadCurve(to: mid, control: prev)
+                        if i == points.count - 1 {
+                            p.addQuadCurve(to: cur, control: cur)
+                        }
+                    }
+                }
+                .stroke(ink, style: StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
             }
-            .stroke(ink, lineWidth: 2.2)
         }
     }
     
     private func curvePoints(width: CGFloat, height: CGFloat) -> [CGPoint] {
-        let n = max(bands.count, 2)
-        let minV = bands.map(\.min).min() ?? -12
-        let maxV = bands.map(\.max).max() ?? 12
+        let values = Array(store.normalized10(store.snapshot.bandValues).dropFirst())
+        let n = max(values.count, 2)
+        let minV: Double = bandRange.lowerBound
+        let maxV: Double = bandRange.upperBound
         
         func y(for v: Double) -> CGFloat {
             let denom = (maxV - minV == 0) ? 1 : (maxV - minV)
             let t = (v - minV) / denom
-            return (1 - CGFloat(t)) * height
+            let inset: CGFloat = 6
+            return inset + (1 - CGFloat(t)) * (height - inset * 2)
         }
         
         var pts: [CGPoint] = []
@@ -236,7 +188,7 @@ struct EQView: View {
         
         for i in 0..<n {
             let x = CGFloat(i) / CGFloat(n - 1) * width
-            pts.append(CGPoint(x: x, y: y(for: bands[i].value)))
+            pts.append(CGPoint(x: x, y: y(for: values[i])))
         }
         
         if pts.count > 2 {
@@ -254,40 +206,32 @@ struct EQView: View {
         GeometryReader { geo in
             let w = geo.size.width
             let h: CGFloat = 44
-            let count = max(bands.count, 1)
-            
-            // ✅ почти размер поля, “liquid”
-            let knobW = max(90, w * 0.28)
+            let count = max(bandLabels.count, 1)
+
+            let knobW = max(140, w * 0.60)
             let step = (w - knobW) / CGFloat(max(count - 1, 1))
             let x = CGFloat(focusedIndex) * step
-            
+
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(.ultraThinMaterial)
+                .fill(ink.opacity(store.snapshot.eqEnabled ? 0.10 : 0.06))
+                .frame(width: knobW, height: h)
                 .overlay(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(ink.opacity(0.06), lineWidth: 1)
+                        .stroke(ink.opacity(store.snapshot.eqEnabled ? 0.18 : 0.10), lineWidth: 1)
                 )
-                .frame(height: h)
-                .overlay(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(ink.opacity(0.03))     // ✅ почти прозрачная “ручка”
-                        .background(.ultraThinMaterial)
-                        .frame(width: knobW, height: 38)
-                        .offset(x: x)
-                        .animation(.easeOut(duration: 0.12), value: focusedIndex)
-                }
+                .offset(x: x)
+                .animation(.easeOut(duration: 0.12), value: focusedIndex)
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { g in
-                            // ✅ индекс считаем по позиции — меньше дёрганья
                             let p = min(max(g.location.x / max(w, 1), 0), 1)
                             let idx = Int((p * CGFloat(count - 1)).rounded())
                             let clamped = max(0, min(count - 1, idx))
-                            
+
                             guard clamped != focusedIndex else { return }
                             focusedIndex = clamped
-                            
+
                             if let proxy = scrollProxy {
                                 withAnimation(.easeOut(duration: 0.12)) {
                                     proxy.scrollTo(clamped, anchor: .center)
@@ -295,41 +239,122 @@ struct EQView: View {
                             }
                         }
                 )
-                .opacity(eqEnabled ? 1.0 : 0.55)
         }
         .frame(height: 44)
+        .opacity(store.snapshot.eqEnabled ? 1.0 : 0.55)
     }
-    
     // MARK: - Bottom panel
     
     private var bottomPanel: some View {
-        HStack(spacing: 12) {
-            VStack(spacing: 10) {
-                modeButton(title: "Equ", isOn: eqEnabled) {
-                    withAnimation(.easeInOut(duration: 0.18)) { eqEnabled.toggle() }
+        VStack(spacing: 10) {
+            HStack(spacing: 6) {
+                modeButton(title: "Equ", isOn: store.snapshot.eqEnabled) {
+                    withAnimation(.easeInOut(duration: 0.18)) { store.snapshot.eqEnabled.toggle() }
                 }
+                .frame(width: 96)
                 
-                modeButton(title: "Tone", isOn: eqEnabled && toneEnabled) {
-                    guard eqEnabled else { return }
-                    withAnimation(.easeInOut(duration: 0.18)) { toneEnabled.toggle() }
-                }
-                .opacity(eqEnabled ? 1.0 : 0.45)
-                
-                modeButton(title: "Limit", isOn: eqEnabled && limitEnabled) {
-                    guard eqEnabled else { return }
-                    withAnimation(.easeInOut(duration: 0.18)) { limitEnabled.toggle() }
-                }
-                .opacity(eqEnabled ? 1.0 : 0.45)
+                presetMenuButton
             }
-            .frame(width: 96)
             
-            VStack(spacing: 10) {
+            HStack(spacing: 6) {
+                VStack(spacing: 10) {
+                    modeButton(title: "Tone", isOn: store.snapshot.toneEnabled) {
+                        withAnimation(.easeInOut(duration: 0.18)) { store.snapshot.toneEnabled.toggle() }
+                    }
+                    .opacity(store.snapshot.eqEnabled ? 1.0 : 0.45)
+                    
+                    modeButton(title: "Limit", isOn: store.snapshot.limiterEnabled) {
+                        withAnimation(.easeInOut(duration: 0.18)) { store.snapshot.limiterEnabled.toggle() }
+                    }
+                    .opacity(store.snapshot.eqEnabled ? 1.0 : 0.45)
+                }
+                .frame(width: 96)
+                
                 HStack(spacing: 18) {
-                    ToneKnob(title: "Bass", value: $bass, enabled: eqEnabled && toneEnabled, ink: ink)
-                    ToneKnob(title: "Treble", value: $treble, enabled: eqEnabled && toneEnabled, ink: ink)
+                    ToneKnob(
+                        title: "Bass",
+                        value: Binding(get: { store.snapshot.bass }, set: { store.snapshot.bass = $0; scheduleDSP() }),
+                        enabled: store.snapshot.toneEnabled,
+                        ink: ink
+                    )
+                    ToneKnob(
+                        title: "Treble",
+                        value: Binding(get: { store.snapshot.treble }, set: { store.snapshot.treble = $0; scheduleDSP() }),
+                        enabled: store.snapshot.toneEnabled,
+                        ink: ink
+                    )
                 }
             }
         }
+    }
+    
+    private var presetMenuButton: some View {
+        Menu {
+            Section("Built-in") {
+                ForEach(BuiltInEQPreset.allCases) { p in
+                    Button {
+                        store.selectBuiltIn(p, keepEQEnabled: true)
+                        scheduleDSP()
+                    } label: {
+                        if store.snapshot.selectedPresetId == p.id {
+                            Label(p.title, systemImage: "checkmark")
+                        } else {
+                            Text(p.title)
+                        }
+                    }
+                }
+            }
+            
+            if !store.userPresets.isEmpty {
+                Section("My Presets") {
+                    ForEach(store.userPresets) { p in
+                        Button {
+                            store.selectUserPreset(id: p.id, keepEQEnabled: true)
+                            scheduleDSP()
+                        } label: {
+                            if store.snapshot.selectedPresetId == p.id {
+                                Label(p.name, systemImage: "checkmark")
+                            } else {
+                                Text(p.name)
+                            }
+                        }
+                    }
+                }
+            }
+            
+            Section {
+                Button {
+                    showSavePreset = true
+                } label: {
+                    Label("Save Preset…", systemImage: "plus")
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(currentPresetTitle)
+                    .foregroundStyle(ink)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                
+                Image(systemName: "chevron.down")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(ink.opacity(0.7))
+            }
+            .frame(maxWidth: 260, alignment: .center)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.black.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(ink.opacity(0.16), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .layoutPriority(1)
     }
     
     private func modeButton(title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
@@ -351,65 +376,32 @@ struct EQView: View {
         .buttonStyle(.plain)
     }
     
-    // MARK: - Presets
+    // MARK: - DSP
     
-    private func applyPreset(_ p: Preset) {
-        let v: [Double]
-        switch p {
-        case .flat:
-            v = [0, 0,0,0,0,0,0,0,0,0]
-        case .rock:
-            v = [0, 3,2,1,0.5,-0.5,1.5,3,1,0.5]
-        case .bassBoost:
-            v = [2, 6,5,3,1,0,-1,-1,-1,-1]
-        case .trebleBoost:
-            v = [0, -1,-1,0,1,2,4,5,6,5]
-        case .vShape:
-            v = [0, 4,3,1,-1,-1,1,3,4,3]
-        case .vocal:
-            v = [0, -2,-1,1,3,3,2,1,0,0]
-        case .metal:
-            v = [0, 4,3,0,-1,1,3,4,2,1]
-        case .dance:
-            v = [0, 5,4,2,0,-1,1,3,4,3]
-        case .acoustic:
-            v = [0, -1,0,1,2,2,1,0,-1,-1]
-        }
+    private func scheduleDSP() {
+        dspWorkItem?.cancel()
+        let item = DispatchWorkItem { syncDSP() }
+        dspWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03, execute: item)
+    }
+    
+    private func syncDSP() {
+        let s = store.snapshot.normalized10()
         
-        for i in bands.indices {
-            bands[i].value = v[safe: i] ?? 0
-        }
+        env.player.setEQEnabled(s.eqEnabled)
+        
+        let pre = Float(s.bandValues.first ?? 0)
+        let gains = s.bandValues.dropFirst().map { Float($0) }
+        env.player.applyEQ(preampDB: pre, gainsDB: gains)
+        
+        env.player.setToneEnabled(s.toneEnabled)
+        env.player.applyTone(bassPercent: Float(s.bass), treblePercent: Float(s.treble))
+        
+        env.player.setLimiterEnabled(s.limiterEnabled && s.eqEnabled)
     }
 }
 
-// MARK: - Models
-
-private struct EQBand: Equatable {
-    var label: String
-    var value: Double
-    var min: Double
-    var max: Double
-}
-
-private enum Preset: String, CaseIterable, Identifiable {
-    case flat, rock, bassBoost, trebleBoost, vShape, vocal, metal, dance, acoustic
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .flat: return "Flat"
-        case .rock: return "Rock"
-        case .bassBoost: return "Bass Boost"
-        case .trebleBoost: return "Treble Boost"
-        case .vShape: return "V-Shape"
-        case .vocal: return "Vocal"
-        case .metal: return "Metal"
-        case .dance: return "Dance"
-        case .acoustic: return "Acoustic"
-        }
-    }
-}
-
-// MARK: - Vertical slider (no out-of-bounds)
+// MARK: - Slider
 
 private struct VerticalEQSlider: View {
     @Binding var value: Double
@@ -417,66 +409,98 @@ private struct VerticalEQSlider: View {
     let enabled: Bool
     let ink: Color
     
-    private let handleH: CGFloat = 44
+    @GestureState private var isDragging: Bool = false
+    
+    private let handleW: CGFloat = 22
+    private let handleH: CGFloat = 54
+    private let trackW: CGFloat = 3
+    private let activeInset: CGFloat = 33
+
+    private var trackWidth: CGFloat { isDragging ? (trackW + 1) : trackW }
+    private var handleStroke: CGFloat { isDragging ? 1.6 : 1.0 }
     
     var body: some View {
         GeometryReader { geo in
             let h = geo.size.height
-            let w = geo.size.width
+            let activeTop = activeInset
+            let activeBottom = max(activeTop + 1, h - activeInset)
+            let activeH = activeBottom - activeTop
+            
+            let t = normalized(value)
+            let yRaw = activeTop + (1 - t) * activeH
+            let yCenter = min(max(yRaw, handleH * 0.5), h - handleH * 0.5)
             
             ZStack {
-                Capsule()
+                Capsule(style: .continuous)
                     .fill(ink.opacity(0.18))
-                    .frame(width: 3)
+                    .frame(width: trackWidth)
+                
+                VStack(spacing: 3) {
+                    dashedStack
+                    Spacer(minLength: 0)
+                    dashedStack
+                }
+                .frame(width: trackWidth)
+                .padding(.top, 6)
+                .padding(.bottom, 6)
+                .allowsHitTesting(false)
                 
                 Rectangle()
-                    .fill(ink.opacity(0.18))
-                    .frame(width: 26, height: 1)
+                    .fill(ink.opacity(0.30))
+                    .frame(width: 28, height: 1)
+                    .offset(y: activeTop + activeH * 0.5 - h * 0.5)
+                    .allowsHitTesting(false)
                 
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.white.opacity(0.78))
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(Color.white.opacity(enabled ? 1.0 : 0.75))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(ink.opacity(0.55), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .stroke(ink.opacity(0.55), lineWidth: handleStroke)
                     )
-                    .frame(width: w, height: handleH)
                     .overlay(
-                        Capsule()
-                            .fill(ink.opacity(0.55))
-                            .frame(width: 18, height: 4)
+                        Rectangle()
+                            .fill(ink.opacity(0.90))
+                            .frame(width: handleW - 8, height: 2)
                     )
-                    .position(x: w / 2, y: yPos(for: value, height: h))
-                    .shadow(radius: 2, y: 1)
+                    .frame(width: handleW, height: handleH)
+                    .position(x: geo.size.width * 0.5, y: yCenter)
+                    .shadow(color: .black.opacity(0.10), radius: 8, x: 0, y: 6)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
-            .highPriorityGesture(
+            .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { g in
                         guard enabled else { return }
-                        let y = min(max(g.location.y, handleH / 2), h - handleH / 2)
-                        value = valueFrom(y: y, height: h)
+                        let y = min(max(g.location.y, max(activeTop, handleH * 0.5)), min(activeBottom, h - handleH * 0.5))
+                        let tNew = 1 - ((y - activeTop) / max(activeH, 1))
+                        value = denormalized(tNew)
                     }
             )
-            .opacity(enabled ? 1.0 : 0.40)
         }
     }
     
-    private func yPos(for v: Double, height: CGFloat) -> CGFloat {
-        let denom = (range.upperBound - range.lowerBound == 0) ? 1 : (range.upperBound - range.lowerBound)
-        let t = (v - range.lowerBound) / denom
-        let raw = (1 - CGFloat(t)) * height
-        return min(max(raw, handleH / 2), height - handleH / 2)
+    private var dashedStack: some View {
+        VStack(spacing: 3) {
+            ForEach(0..<3, id: \.self) { _ in
+                Rectangle()
+                    .fill(ink.opacity(0.22))
+                    .frame(width: trackW, height: 3)
+            }
+        }
     }
     
-    private func valueFrom(y: CGFloat, height: CGFloat) -> Double {
-        let usable = max(height - handleH, 1)
-        let t = 1 - Double((y - handleH / 2) / usable)
-        return range.lowerBound + t * (range.upperBound - range.lowerBound)
+    private func normalized(_ v: Double) -> CGFloat {
+        let r = range.upperBound - range.lowerBound
+        if r == 0 { return 0.5 }
+        let tt = (v - range.lowerBound) / r
+        return CGFloat(min(max(tt, 0), 1))
+    }
+    
+    private func denormalized(_ t: CGFloat) -> Double {
+        let tt = Double(min(max(t, 0), 1))
+        return range.lowerBound + (range.upperBound - range.lowerBound) * tt
     }
 }
-
-// MARK: - Tone knob
 
 private struct ToneKnob: View {
     let title: String
@@ -504,17 +528,17 @@ private struct ToneKnob: View {
                 
                 Rectangle()
                     .fill(ink.opacity(enabled ? 0.75 : 0.25))
-                    .frame(width: 4, height: 22)
-                    .offset(y: -22)
+                    .frame(width: 4, height: 18)
+                    .offset(y: -20)
                     .rotationEffect(.degrees(angle))
             }
-            .frame(width: 110, height: 110)
+            .frame(width: 84, height: 84)
             .contentShape(Circle())
             .highPriorityGesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { g in
                         guard enabled else { return }
-                        let delta = -Double(g.translation.height) * 0.6
+                        let delta = -Double(g.translation.height) * 0.7
                         value = clamp(value + delta, range)
                     }
             )
@@ -530,33 +554,6 @@ private struct ToneKnob: View {
     
     private func clamp(_ v: Double, _ r: ClosedRange<Double>) -> Double {
         min(max(v, r.lowerBound), r.upperBound)
-    }
-}
-
-// MARK: - Press button
-
-private struct PressButton: View {
-    let isOn: Bool
-    let titleOn: String
-    let titleOff: String
-    let action: () -> Void
-    
-    var body: some View {
-        Button(action: action) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(isOn ? Color.black : Color.black.opacity(0.06))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(Color.black.opacity(0.16), lineWidth: 1)
-                    )
-                
-                Text(isOn ? titleOn : titleOff)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(isOn ? Color.white : Color.black)
-            }
-        }
-        .buttonStyle(.plain)
     }
 }
 

@@ -13,7 +13,12 @@ struct WaveformSeekView: View {
     // “Files-like”: насколько длиннее экрана делаем waveform при большом количестве samples
     private let maxBarsOnScreen: Int = 120
     
-    @State private var isDragging = false
+    @State private var isScrubbing = false
+    @State private var scrubProgress: Double = 0 // 0...1
+    
+    private var displayedProgress: Double {
+        isScrubbing ? scrubProgress : progress
+    }
     
     var body: some View {
         GeometryReader { geo in
@@ -34,15 +39,18 @@ struct WaveformSeekView: View {
                 }
                 .contentShape(Rectangle())
                 .gesture(
-                    DragGesture(minimumDistance: 0)
+                    DragGesture(minimumDistance: 0, coordinateSpace: .local)
                         .onChanged { g in
-                            isDragging = true
+                            isScrubbing = true
                             let x = clamp(g.location.x, 0, contentWidth)
                             let p = Double(x / max(contentWidth, 1))
-                            onSeek(clamp(p, 0, 1))
+                            scrubProgress = clamp(p, 0, 1)
                         }
                         .onEnded { _ in
-                            isDragging = false
+                            onSeek(scrubProgress)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+                                isScrubbing = false
+                            }
                         }
                 )
             }
@@ -73,7 +81,7 @@ struct WaveformSeekView: View {
     }
     
     private func progressOverlay(contentWidth: CGFloat, height: CGFloat) -> some View {
-        let x = CGFloat(clamp(progress, 0, 1)) * contentWidth
+        let x = CGFloat(clamp(displayedProgress, 0, 1)) * contentWidth
         
         return ZStack(alignment: .leading) {
             // “закрашенная” часть waveform (поверх)
@@ -86,7 +94,7 @@ struct WaveformSeekView: View {
             
             // курсор
             RoundedRectangle(cornerRadius: 2, style: .continuous)
-                .fill(Color.white.opacity(isDragging ? 0.9 : 0.55))
+                .fill(Color.white.opacity(isScrubbing ? 0.9 : 0.55))
                 .frame(width: 3, height: height - 18)
                 .padding(.leading, 12 + x)
                 .padding(.vertical, 9)

@@ -1,54 +1,80 @@
 import Foundation
 import AVFoundation
-import os
+import UIKit
+
+// MARK: - MetadataReader
+// iOS 16+ async AVFoundation metadata loading.
 
 enum MetadataReader {
-    
-    struct Metadata {
+
+    struct TrackMetadata: Sendable {
         var title: String?
         var artist: String?
         var album: String?
-        var duration: Double?
+        var duration: TimeInterval?
         var artworkData: Data?
     }
-    
-    /// Читает метаданные из файла по URL (внутри security-scope вызови FolderAccess.withAccess)
-    static func read(from fileURL: URL) -> Metadata {
-        let asset = AVURLAsset(url: fileURL)
-        var out = Metadata()
-        
-        // duration
-        let dur = asset.duration
-        if dur.isNumeric {
-            out.duration = CMTimeGetSeconds(dur)
-        }
-        
-        // common metadata
-        let common = asset.commonMetadata
-        
-        out.title = firstString(common, key: .commonKeyTitle)
-        out.artist = firstString(common, key: .commonKeyArtist)
-        out.album = firstString(common, key: .commonKeyAlbumName)
-        
-        // artwork (m4a/mp3 иногда отдаёт data, иногда image)
-        if let artworkItem = common.first(where: { $0.commonKey == .commonKeyArtwork }) {
-            if let data = artworkItem.dataValue {
-                out.artworkData = data
-            } else if let imageData = artworkItem.value as? Data {
-                out.artworkData = imageData
+
+    static func read(from url: URL) async -> TrackMetadata {
+        let asset = AVURLAsset(url: url)
+        var out = TrackMetadata()
+
+        // Duration
+        do {
+            let time = try await asset.load(.duration)
+            let secs = CMTimeGetSeconds(time)
+            if secs.isFinite, secs > 0 { out.duration = secs }
+        } catch { }
+
+        // Common metadata
+        do {
+            let items = try await asset.load(.commonMetadata)
+
+            out.title = await firstStringValue(for: .commonKeyTitle, in: items)
+            out.artist = await firstStringValue(for: .commonKeyArtist, in: items)
+            out.album = await firstStringValue(for: .commonKeyAlbumName, in: items)
+
+            if let artItem = items.first(where: { $0.commonKey == .commonKeyArtwork }) {
+                out.artworkData = await dataValue(of: artItem)
             }
-        }
-        
-        Log.meta.debug("Metadata read: \(fileURL.lastPathComponent, privacy: .public) title=\(out.title ?? "nil", privacy: .public)")
-        
+        } catch { }
+
         return out
     }
-    
-    private static func firstString(_ items: [AVMetadataItem], key: AVMetadataKey) -> String? {
-        let item = items.first(where: { $0.commonKey == key })
-        if let s = item?.stringValue, !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return s
+
+    // MARK: - Helpers
+
+    private static func firstStringValue(for key: AVMetadataKey, in items: [AVMetadataItem]) async -> String? {
+        guard let item = items.first(where: { $0.commonKey == key }) else { return nil }
+        return await stringValue(of: item)
+    }
+
+    private static func stringValue(of item: AVMetadataItem) async -> String? {
+        do {
+            return try await item.load(.stringValue)
+        } catch {
+            // Fallback (some sources still bridge value)
+            do {
+                if let v = try await item.load(.value) {
+                    if let s = v as? String { return s }
+                    return String(describing: v)
+                }
+            } catch { }
+            return nil
         }
-        return nil
+    }
+
+    private static func dataValue(of item: AVMetadataItem) async -> Data? {
+        do {
+            return try await item.load(.dataValue)
+        } catch {
+            // Fallback (some sources still bridge value)
+            do {
+                if let v = try await item.load(.value) {
+                    if let d = v as? Data { return d }
+                }
+            } catch { }
+            return nil
+        }
     }
 }

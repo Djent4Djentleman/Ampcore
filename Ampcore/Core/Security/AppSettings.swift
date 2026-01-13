@@ -13,8 +13,11 @@ final class AppSettings: ObservableObject {
     // Audio
     @AppStorage("settings.crossfadeEnabled") var crossfadeEnabled: Bool = false
     @AppStorage("settings.crossfadeSeconds") var crossfadeSeconds: Double = 6
-    @AppStorage("settings.fadeInEnabled") var fadeInEnabled: Bool = false
-    @AppStorage("settings.fadeInSeconds") var fadeInSeconds: Double = 0.3
+    @AppStorage("settings.fadeTransportEnabled") var fadeTransportEnabled: Bool = false
+    @AppStorage("settings.fadeTransportSeconds") var fadeTransportSeconds: Double = 0.30
+    @AppStorage("settings.fadeSeekEnabled") var fadeSeekEnabled: Bool = false
+    @AppStorage("settings.fadeSeekSeconds") var fadeSeekSeconds: Double = 0.08
+    
     @AppStorage("settings.gaplessEnabled") var gaplessEnabled: Bool = true
     @AppStorage("settings.replayGainEnabled") var replayGainEnabled: Bool = false
     

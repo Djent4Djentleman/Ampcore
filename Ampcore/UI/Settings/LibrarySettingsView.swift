@@ -62,8 +62,6 @@ struct LibrarySettingsView: View {
         .sheet(isPresented: $showPicker) {
             FolderPicker { url in
                 showPicker = false
-                guard let url else { return }
-                
                 do {
                     try env.folderAccess.storeSelectedFolder(url: url)
                     resultText = nil
