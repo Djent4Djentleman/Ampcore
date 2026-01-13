@@ -33,7 +33,6 @@ final class AppEnvironment: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &bag)
         
-        
         // Apply settings to player
         player.applySettings(settings)
         
@@ -51,6 +50,7 @@ final class AppEnvironment: ObservableObject {
             .store(in: &bag)
         
         NotificationCenter.default.publisher(for: AudioEnginePlayer.didFinishTrack)
+            .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 guard let self else { return }
                 self.handleTrackEnded()

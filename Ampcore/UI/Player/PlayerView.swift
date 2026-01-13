@@ -70,6 +70,7 @@ struct PlayerView: View {
         }
         .onAppear {
             scrubProgress = env.player.playbackProgress
+            refreshPlaybackModesFromStorage()
         }
         .onChange(of: env.player.playbackProgress) { _, v in
             guard !isScrubbing && !isWaveScrubbing else { return }
@@ -78,13 +79,17 @@ struct PlayerView: View {
         .onReceive(oneSecTick) { _ in
             handleSleepTimerTick()
         }
+        .onChange(of: shuffleEnabled) { _, newValue in
+            env.player.shuffleEnabled = newValue
+        }
+        .onChange(of: repeatModeRaw) { _, _ in
+            env.player.repeatMode = repeatMode
+        }
     }
     
     // MARK: - Top bar
     
     private var topBar: some View { EmptyView() }
-    
-    // MARK: - Cover
     
     // MARK: - Cover
     
@@ -113,7 +118,7 @@ struct PlayerView: View {
             .padding(16)
         }
         .frame(maxWidth: .infinity)
-        .aspectRatio(1, contentMode: .fit) // Square by width
+        .aspectRatio(1, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .shadow(color: .black.opacity(0.6), radius: 28, x: 0, y: 16)
     }
@@ -246,7 +251,6 @@ struct PlayerView: View {
         return try? moc.existingObject(with: id) as? CDTrack
     }
     
-    
     private var trackTitle: String {
         let t = env.player.nowPlayingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         return t.isEmpty ? "—" : t
@@ -271,8 +275,10 @@ struct PlayerView: View {
         }
     }
     
-    
-    
+    private func refreshPlaybackModesFromStorage() {
+        env.player.shuffleEnabled = shuffleEnabled
+        env.player.repeatMode = repeatMode
+    }
     
     private var cs: ColorScheme {
         switch env.settings.theme {
@@ -308,33 +314,25 @@ struct PlayerView: View {
         .foregroundStyle(on ? .white : .white.opacity(0.55))
     }
     
-    // MARK: - Transport logic (unchanged)
+    // MARK: - Transport logic
     
     private func togglePlayPause() {
-        env.player.isPlaying ? env.player.pause() : env.player.resume()
+        if env.player.hasLoadedFile {
+            env.player.isPlaying ? env.player.pause() : env.player.resume()
+            return
+        }
+        env.togglePlayPause(context: moc)
     }
     
     private func playNext() {
-        guard let next = resolveNextTrack() else { return }
-        env.player.play(track: next)
+        env.playNext(context: moc)
     }
     
     private func playPrev() {
-        guard let prev = resolvePrevTrack() else { return }
-        env.player.play(track: prev)
+        env.playPrev(context: moc)
     }
     
-    private func resolveNextTrack() -> CDTrack? {
-        guard let id = env.player.nextTrackID() else { return nil }
-        return try? moc.existingObject(with: id) as? CDTrack
-    }
-    
-    private func resolvePrevTrack() -> CDTrack? {
-        guard let id = env.player.prevTrackID() else { return nil }
-        return try? moc.existingObject(with: id) as? CDTrack
-    }
-    
-    // MARK: - Sleep timer (unchanged)
+    // MARK: - Sleep timer
     
     private var sleepEndDate: Date? {
         sleepEndTs > 0 ? Date(timeIntervalSince1970: sleepEndTs) : nil
@@ -445,7 +443,7 @@ private struct WaveformProgressView: View {
             // Stable layout: compute a fixed bar grid that fills width exactly.
             let desired = max(50, min(220, Int(round(w * barsPerPoint))))
             let nBars = max(1, desired)
-            let step = w / CGFloat(nBars) // fills exactly
+            let step = w / CGFloat(nBars)
             let xInset = max(0, (step - barWidth) * 0.5)
             
             let peaks = downsamplePeaks(samples, to: nBars)
@@ -490,7 +488,6 @@ private struct WaveformProgressView: View {
 }
 
 // MARK: - RepeatMode
-
 
 private enum RepeatMode: Int {
     case off, all, one
