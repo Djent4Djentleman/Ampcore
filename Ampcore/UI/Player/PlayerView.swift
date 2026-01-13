@@ -3,6 +3,8 @@ import Combine
 import CoreData
 import UIKit
 
+private typealias RepeatMode = AudioEnginePlayer.RepeatMode
+
 struct PlayerView: View {
     @EnvironmentObject private var env: AppEnvironment
     @Environment(\.colorScheme) private var envScheme
@@ -489,9 +491,7 @@ private struct WaveformProgressView: View {
 
 // MARK: - RepeatMode
 
-private enum RepeatMode: Int {
-    case off, all, one
-    
-    var next: RepeatMode { self == .off ? .all : self == .all ? .one : .off }
+private extension AudioEnginePlayer.RepeatMode {
+    var next: AudioEnginePlayer.RepeatMode { self == .off ? .all : self == .all ? .one : .off }
     var icon: String { self == .one ? "repeat.1" : "repeat" }
 }
