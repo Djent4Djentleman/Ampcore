@@ -106,7 +106,7 @@ enum MusicScanner {
         let semaphore = DispatchSemaphore(value: 0)
         var result = SyncMeta()
         
-        Task {
+        Task.detached(priority: .utility) {
             var out = SyncMeta()
             do {
                 let duration = try await asset.load(.duration)
