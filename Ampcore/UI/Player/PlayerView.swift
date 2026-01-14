@@ -3,8 +3,6 @@ import Combine
 import CoreData
 import UIKit
 
-private typealias RepeatMode = AudioEnginePlayer.RepeatMode
-
 struct PlayerView: View {
     @EnvironmentObject private var env: AppEnvironment
     @Environment(\.colorScheme) private var envScheme
@@ -53,8 +51,8 @@ struct PlayerView: View {
             
             Spacer(minLength: 12)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 10)
+        .padding(.horizontal, 8)
+        .padding(.top, 8)
         .padding(.bottom, 8)
         .background(backgroundView.ignoresSafeArea())
         .gesture(playerGestures)
@@ -72,7 +70,6 @@ struct PlayerView: View {
         }
         .onAppear {
             scrubProgress = env.player.playbackProgress
-            refreshPlaybackModesFromStorage()
         }
         .onChange(of: env.player.playbackProgress) { _, v in
             guard !isScrubbing && !isWaveScrubbing else { return }
@@ -80,12 +77,6 @@ struct PlayerView: View {
         }
         .onReceive(oneSecTick) { _ in
             handleSleepTimerTick()
-        }
-        .onChange(of: shuffleEnabled) { _, newValue in
-            env.player.shuffleEnabled = newValue
-        }
-        .onChange(of: repeatModeRaw) { _, _ in
-            env.player.repeatMode = repeatMode
         }
     }
     
@@ -95,34 +86,40 @@ struct PlayerView: View {
     
     // MARK: - Cover
     
+    // MARK: - Cover
+    
     private var coverBlock: some View {
         ZStack(alignment: .bottomLeading) {
             coverImage
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .shadow(color: .black.opacity(0.6), radius: 28, x: 0, y: 16)
             
             LinearGradient(
                 colors: [.clear, .black.opacity(0.75)],
                 startPoint: .top,
                 endPoint: .bottom
             )
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
             
             VStack(alignment: .leading, spacing: 6) {
                 Text(trackTitle)
-                    .font(Typography.font(env.settings.fontChoice, size: 20, bold: false))
+                    .font(.headline.weight(.semibold))
                     .lineLimit(1)
-                
                 Text(trackSubtitle)
-                    .font(Typography.font(env.settings.fontChoice, size: 15, bold: false))
-                    .foregroundStyle(.white.opacity(0.8))
+                    .font(.subheadline)
+                    .opacity(0.75)
                     .lineLimit(1)
             }
-            .padding(18)
             .foregroundStyle(.white)
+            .padding(16)
         }
         .frame(maxWidth: .infinity)
         .aspectRatio(1, contentMode: .fit)
+        .padding(.horizontal, 8)
     }
+    
+    // MARK: - Modes
     
     private var modesBlock: some View {
         HStack(spacing: 18) {
@@ -250,6 +247,7 @@ struct PlayerView: View {
         return try? moc.existingObject(with: id) as? CDTrack
     }
     
+    
     private var trackTitle: String {
         let t = env.player.nowPlayingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         return t.isEmpty ? "—" : t
@@ -274,10 +272,8 @@ struct PlayerView: View {
         }
     }
     
-    private func refreshPlaybackModesFromStorage() {
-        env.player.shuffleEnabled = shuffleEnabled
-        env.player.repeatMode = repeatMode
-    }
+    
+    
     
     private var cs: ColorScheme {
         switch env.settings.theme {
@@ -313,25 +309,33 @@ struct PlayerView: View {
         .foregroundStyle(on ? .white : .white.opacity(0.55))
     }
     
-    // MARK: - Transport logic
+    // MARK: - Transport logic (unchanged)
     
     private func togglePlayPause() {
-        if env.player.hasLoadedFile {
-            env.player.isPlaying ? env.player.pause() : env.player.resume()
-            return
-        }
-        env.togglePlayPause(context: moc)
+        env.player.isPlaying ? env.player.pause() : env.player.resume()
     }
     
     private func playNext() {
-        env.playNext(context: moc)
+        guard let next = resolveNextTrack() else { return }
+        env.player.play(track: next)
     }
     
     private func playPrev() {
-        env.playPrev(context: moc)
+        guard let prev = resolvePrevTrack() else { return }
+        env.player.play(track: prev)
     }
     
-    // MARK: - Sleep timer
+    private func resolveNextTrack() -> CDTrack? {
+        guard let id = env.player.nextTrackID() else { return nil }
+        return try? moc.existingObject(with: id) as? CDTrack
+    }
+    
+    private func resolvePrevTrack() -> CDTrack? {
+        guard let id = env.player.prevTrackID() else { return nil }
+        return try? moc.existingObject(with: id) as? CDTrack
+    }
+    
+    // MARK: - Sleep timer (unchanged)
     
     private var sleepEndDate: Date? {
         sleepEndTs > 0 ? Date(timeIntervalSince1970: sleepEndTs) : nil
@@ -442,7 +446,7 @@ private struct WaveformProgressView: View {
             // Stable layout: compute a fixed bar grid that fills width exactly.
             let desired = max(50, min(220, Int(round(w * barsPerPoint))))
             let nBars = max(1, desired)
-            let step = w / CGFloat(nBars)
+            let step = w / CGFloat(nBars) // fills exactly
             let xInset = max(0, (step - barWidth) * 0.5)
             
             let peaks = downsamplePeaks(samples, to: nBars)
@@ -488,7 +492,10 @@ private struct WaveformProgressView: View {
 
 // MARK: - RepeatMode
 
-private extension AudioEnginePlayer.RepeatMode {
-    var next: AudioEnginePlayer.RepeatMode { self == .off ? .all : self == .all ? .one : .off }
+
+private enum RepeatMode: Int {
+    case off, all, one
+    
+    var next: RepeatMode { self == .off ? .all : self == .all ? .one : .off }
     var icon: String { self == .one ? "repeat.1" : "repeat" }
 }

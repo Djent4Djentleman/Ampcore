@@ -413,11 +413,13 @@ final class AudioEnginePlayer: ObservableObject {
         let maxSeconds = Double(file.length) / sr
         let clampedSeconds = max(0, min(targetSeconds, maxSeconds))
         
+        // UI sync (paused seek needs this)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.currentTime = clampedSeconds
+            let p = maxSeconds > 0 ? (clampedSeconds / maxSeconds) : 0
+            self.playbackProgress = max(0, min(p, 1))
         }
-        
         let targetFrame = AVAudioFramePosition(clampedSeconds * sr)
         
         scheduleToken &+= 1
