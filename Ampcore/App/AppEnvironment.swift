@@ -60,25 +60,35 @@ final class AppEnvironment: ObservableObject {
     
     // MARK: - Library scan
     
-    func scanLibrary(context: NSManagedObjectContext) throws -> MusicScanner.ScanResult {
-        let bookmark = folderAccess.currentBookmarkData()
-        return try folderAccess.withResolvedAccess { folderURL in
-            try MusicScanner.scanAndUpsert(
-                folderURL: folderURL,
-                folderBookmark: bookmark,
-                context: context
-            )
+    func scanLibrary(context: NSManagedObjectContext) async throws -> MusicScanner.ScanResult {
+        guard let bookmark = folderAccess.currentBookmarkData() else {
+            throw FolderAccessError.bookmarkMissing
         }
+        
+        let folderURL = try folderAccess.resolveFolderURL()
+        let ok = folderURL.startAccessingSecurityScopedResource()
+        if !ok { throw FolderAccessError.securityScopeDenied }
+        defer { folderURL.stopAccessingSecurityScopedResource() }
+        
+        return try await MusicScanner.scanAndUpsert(
+            folderURL: folderURL,
+            folderBookmark: bookmark,
+            context: context
+        )
     }
     
     func autoScanIfNeeded(context: NSManagedObjectContext) {
         guard settings.autoScanOnLaunch else { return }
         guard folderAccess.currentBookmarkData() != nil else { return }
         
-        do {
-            _ = try scanLibrary(context: context)
-        } catch {
-            // Ignore
+        Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+            
+            do {
+                _ = try await self.scanLibrary(context: context)
+            } catch {
+                // Ignore
+            }
         }
     }
     
