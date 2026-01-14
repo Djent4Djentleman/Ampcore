@@ -40,15 +40,24 @@ enum Typography {
             
             // 1) Try symbolic bold trait
             if let desc = base.fontDescriptor.withSymbolicTraits([.traitBold]) {
-                return Font(UIFont(descriptor: desc, size: size))
+                let boldFont = UIFont(descriptor: desc, size: size)
+                if boldFont.fontName != base.fontName {
+                    return Font(boldFont)
+                }
             }
             
             // 2) Try weight trait (often works even when .traitBold fails)
             let traits: [UIFontDescriptor.TraitKey: Any] = [
                 .weight: UIFont.Weight.bold
             ]
-            let weighted = base.fontDescriptor.addingAttributes([.traits: traits])
-            return Font(UIFont(descriptor: weighted, size: size))
+            let weightedDesc = base.fontDescriptor.addingAttributes([.traits: traits])
+            let weightedFont = UIFont(descriptor: weightedDesc, size: size)
+            if weightedFont.fontName != base.fontName {
+                return Font(weightedFont)
+            }
+            
+            // 3) Fallback: keep UI bold behavior even if font has no bold face
+            return .system(size: size, weight: .bold)
         }
     }
 }

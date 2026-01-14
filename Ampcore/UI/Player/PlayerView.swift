@@ -109,23 +109,20 @@ struct PlayerView: View {
             
             VStack(alignment: .leading, spacing: 6) {
                 Text(trackTitle)
-                    .font(.headline.weight(.semibold))
+                    .font(Typography.font(env.settings.fontChoice, size: 20, bold: false))
                     .lineLimit(1)
+                
                 Text(trackSubtitle)
-                    .font(.subheadline)
-                    .opacity(0.75)
+                    .font(Typography.font(env.settings.fontChoice, size: 15, bold: false))
+                    .foregroundStyle(.white.opacity(0.8))
                     .lineLimit(1)
             }
+            .padding(18)
             .foregroundStyle(.white)
-            .padding(16)
         }
         .frame(maxWidth: .infinity)
         .aspectRatio(1, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .shadow(color: .black.opacity(0.6), radius: 28, x: 0, y: 16)
     }
-    
-    // MARK: - Modes
     
     private var modesBlock: some View {
         HStack(spacing: 18) {

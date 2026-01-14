@@ -412,6 +412,12 @@ final class AudioEnginePlayer: ObservableObject {
         let sr = max(sampleRate, 1)
         let maxSeconds = Double(file.length) / sr
         let clampedSeconds = max(0, min(targetSeconds, maxSeconds))
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.currentTime = clampedSeconds
+        }
+        
         let targetFrame = AVAudioFramePosition(clampedSeconds * sr)
         
         scheduleToken &+= 1

@@ -25,9 +25,14 @@ struct LookFeelSettingsView: View {
                     ForEach(AppSettings.FontChoice.allCases) { f in
                         Text(f.title).tag(f)
                     }
+                    .onChange(of: env.settings.fontChoice) { _, newValue in
+                        if newValue != .system { env.settings.boldText = false }
+                    }
                 }
                 
                 Toggle("Bold text", isOn: $env.settings.boldText)
+                    .disabled(env.settings.fontChoice != .system)
+                    .opacity(env.settings.fontChoice == .system ? 1 : 0.45)
             }
         }
         .navigationTitle("Look & Feel")
