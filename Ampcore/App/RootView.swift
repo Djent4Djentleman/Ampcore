@@ -61,6 +61,8 @@ struct RootView: View {
                 break
             }
         }
+        .preferredColorScheme(env.settings.colorScheme)
+        .font(Typography.font(env.settings.fontChoice, size: 17, bold: env.settings.boldText))
         .sheet(item: $env.navigation.sheet) { sheet in
             switch sheet {
             case .queue:

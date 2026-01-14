@@ -80,10 +80,19 @@ final class AppSettings: ObservableObject {
         set { themeRaw = newValue.rawValue }
     }
     
+    
+    var colorScheme: ColorScheme? {
+        switch theme {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+    
     enum FontChoice: String, CaseIterable, Identifiable {
         case baaqua, system
         var id: String { rawValue }
-        var title: String { self == .baaqua ? "BaAQUA" : "System (SF)" }
+        var title: String { self == .baaqua ? "Alternative" : "System (SF)" }
     }
     
     @Published private var fontChoiceRaw: String = FontChoice.baaqua.rawValue {

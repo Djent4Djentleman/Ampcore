@@ -66,7 +66,9 @@ private struct ToggleDisclosureSliderRow: View {
                 Spacer(minLength: 8)
                 
                 Button {
-                    expanded.toggle()
+                    withTransaction(Transaction(animation: nil)) {
+                        expanded.toggle()
+                    }
                 } label: {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 13, weight: .semibold))
@@ -81,12 +83,13 @@ private struct ToggleDisclosureSliderRow: View {
             }
             .contentShape(Rectangle())
             .onTapGesture {
-                expanded.toggle()
+                withTransaction(Transaction(animation: nil)) {
+                    expanded.toggle()
+                }
             }
             
             sliderRow
         }
-        .animation(.easeInOut(duration: 0.22), value: expanded) // Smooth expand
     }
     
     private var sliderRow: some View {
@@ -104,10 +107,11 @@ private struct ToggleDisclosureSliderRow: View {
         .opacity(isOn ? 1 : 0.35)
         .frame(maxHeight: expanded ? 44 : 0, alignment: .top) // Keep in layout
         .opacity(expanded ? 1 : 0)
+        .offset(y: expanded ? 0 : -4)
+        .animation(.easeInOut(duration: 0.25), value: expanded)
         .scaleEffect(y: expanded ? 1 : 0.98, anchor: .top)
         .clipped()
         .allowsHitTesting(expanded)
         .accessibilityHidden(!expanded)
     }
 }
-

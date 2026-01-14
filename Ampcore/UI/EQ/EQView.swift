@@ -3,7 +3,7 @@ import SwiftUI
 struct EQView: View {
     @EnvironmentObject private var env: AppEnvironment
     
-    private let ink = Color.black
+    private let ink = Color.primary
     
     @State private var scrollProxy: ScrollViewProxy?
     @State private var focusedIndex: Int = 0
@@ -130,7 +130,7 @@ struct EQView: View {
         ZStack {
             responseCurve
                 .padding(.horizontal, 16)
-
+            
             glassScroller
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
@@ -138,7 +138,7 @@ struct EQView: View {
         .frame(height: 74)
         .opacity(store.snapshot.eqEnabled ? 1.0 : 0.45)
     }
-
+    
     private var responseCurve: some View {
         GeometryReader { geo in
             let w = geo.size.width
@@ -207,11 +207,11 @@ struct EQView: View {
             let w = geo.size.width
             let h: CGFloat = 44
             let count = max(bandLabels.count, 1)
-
+            
             let knobW = max(140, w * 0.60)
             let step = (w - knobW) / CGFloat(max(count - 1, 1))
             let x = CGFloat(focusedIndex) * step
-
+            
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(ink.opacity(store.snapshot.eqEnabled ? 0.10 : 0.06))
                 .frame(width: knobW, height: h)
@@ -228,10 +228,10 @@ struct EQView: View {
                             let p = min(max(g.location.x / max(w, 1), 0), 1)
                             let idx = Int((p * CGFloat(count - 1)).rounded())
                             let clamped = max(0, min(count - 1, idx))
-
+                            
                             guard clamped != focusedIndex else { return }
                             focusedIndex = clamped
-
+                            
                             if let proxy = scrollProxy {
                                 withAnimation(.easeOut(duration: 0.12)) {
                                     proxy.scrollTo(clamped, anchor: .center)
@@ -415,7 +415,7 @@ private struct VerticalEQSlider: View {
     private let handleH: CGFloat = 54
     private let trackW: CGFloat = 3
     private let activeInset: CGFloat = 33
-
+    
     private var trackWidth: CGFloat { isDragging ? (trackW + 1) : trackW }
     private var handleStroke: CGFloat { isDragging ? 1.6 : 1.0 }
     
