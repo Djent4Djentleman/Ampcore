@@ -47,6 +47,7 @@ final class AudioEnginePlayer: ObservableObject {
     
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
+    private let preGainMixer = AVAudioMixerNode()
     
     private let eq = AVAudioUnitEQ(numberOfBands: 9)
     private let toneEQ = AVAudioUnitEQ(numberOfBands: 2)
@@ -54,7 +55,7 @@ final class AudioEnginePlayer: ObservableObject {
     private let limiter: AVAudioUnitEffect = {
         let desc = AudioComponentDescription(
             componentType: kAudioUnitType_Effect,
-            componentSubType: kAudioUnitSubType_DynamicsProcessor,
+            componentSubType: kAudioUnitSubType_PeakLimiter,
             componentManufacturer: kAudioUnitManufacturer_Apple,
             componentFlags: 0,
             componentFlagsMask: 0
@@ -67,6 +68,15 @@ final class AudioEnginePlayer: ObservableObject {
     private var currentFile: AVAudioFile?
     private var currentStartFrame: AVAudioFramePosition = 0
     private var sampleRate: Double = 44100
+    
+    // Auto-Gain state (audioQueue-only)
+    private var lastEQMaxBoostDB: Float = 0
+    private var lastToneMaxBoostDB: Float = 0
+    private var lastLimiterDriveDB: Float = 0
+    
+    // Pre-gain smoothing (audioQueue-only)
+    private var preGainRampToken: UInt64 = 0
+    private var lastPreGainLinear: Float = 1.0
     
     private var progressTimer: DispatchSourceTimer?
     private var scheduleToken: UInt64 = 0
@@ -92,11 +102,13 @@ final class AudioEnginePlayer: ObservableObject {
     private init() {
         audioQueue.sync {
             engine.attach(playerNode)
+            engine.attach(preGainMixer)
             engine.attach(eq)
             engine.attach(toneEQ)
             engine.attach(limiter)
             
-            engine.connect(playerNode, to: eq, format: nil)
+            engine.connect(playerNode, to: preGainMixer, format: nil)
+            engine.connect(preGainMixer, to: eq, format: nil)
             engine.connect(eq, to: toneEQ, format: nil)
             engine.connect(toneEQ, to: limiter, format: nil)
             engine.connect(limiter, to: engine.mainMixerNode, format: nil)
@@ -104,6 +116,8 @@ final class AudioEnginePlayer: ObservableObject {
             configureEQDefaults()
             configureToneDefaults()
             configureLimiterDefaults()
+            
+            preGainMixer.outputVolume = 1.0
             
             // Default DSP off
             eq.bypass = true
@@ -205,6 +219,94 @@ final class AudioEnginePlayer: ObservableObject {
     
     // MARK: - DSP (EQ / Tone / Limiter)
     
+    // MARK: - Pro Auto-Gain & Safety
+    
+    private func dbToLinear(_ db: Float) -> Float {
+        // linear = 10^(dB/20)
+        return pow(10.0, db / 20.0)
+    }
+    
+    private func clamp(_ v: Float, _ lo: Float, _ hi: Float) -> Float {
+        min(max(v, lo), hi)
+    }
+    
+    /// Smoothly ramp pre-gain to avoid audible "jumps" when enabling limiter or moving EQ/Tone.
+    private func setPreGainSmooth(_ targetLinear: Float, seconds: Double = 0.18) {
+        let target = clamp(targetLinear, 0.0, 1.0)
+        let start = lastPreGainLinear
+        let dur = max(0.0, seconds)
+        if abs(start - target) < 0.0005 {
+            preGainMixer.outputVolume = target
+            lastPreGainLinear = target
+            return
+        }
+        
+        preGainRampToken &+= 1
+        let token = preGainRampToken
+        
+        let steps = max(1, Int(dur / 0.02))
+        let dt = dur / Double(steps)
+        for i in 1...steps {
+            let delay = dt * Double(i)
+            audioQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self else { return }
+                guard self.preGainRampToken == token else { return }
+                let t = Float(Double(i) / Double(steps))
+                let v = start + (target - start) * t
+                self.preGainMixer.outputVolume = v
+                if i == steps {
+                    self.lastPreGainLinear = target
+                }
+            }
+        }
+    }
+    
+    /// UI remains ±12 dB, but for cleaner, safer sound we softly cap extreme *boosts* in sub/air bands.
+    private func clampedEQGain(bandIndex: Int, gainDB: Float) -> Float {
+        let g = clamp(gainDB, -12, 12)
+        if g <= 0 { return g }
+        
+        // Safety caps depend on limiter state:
+        // - Limiter OFF: UI is truthful (±12 dB) even if it clips (user requested).
+        // - Limiter ON: softly cap extreme boosts (especially sub/air) to reduce pumping and distortion.
+        let limiterOn = !limiter.bypass
+        
+        switch bandIndex {
+        case 0, 1, 2:
+            // 31–125 Hz: allow full boost when limiter is off
+            return min(g, limiterOn ? 8 : 12)
+        case 7:
+            // 4 kHz: mildly cap when limiter is on
+            return min(g, limiterOn ? 10 : 12)
+        case 8:
+            // 8 kHz: cap more aggressively when limiter is on
+            return min(g, limiterOn ? 8 : 12)
+        default:
+            return g
+        }
+    }
+    
+    /// Recompute pre-gain headroom so EQ/Tone boosts don't constantly hit the limiter.
+    /// Pro strategy: take the maximum positive boost and apply partial compensation (keeps punch).
+    private func updateAutoGainLocked() {
+        // User requirement:
+        // - When limiter is OFF: do not change overall loudness; allow clipping if user boosts EQ.
+        // - When limiter is ON: apply gentle, smooth headroom compensation to reduce clipping/pumping.
+        guard !limiter.bypass else {
+            setPreGainSmooth(1.0, seconds: 0.10)
+            return
+        }
+        
+        let maxBoost = max(0, max(lastEQMaxBoostDB, lastToneMaxBoostDB))
+        
+        // Gentle compensation: preserve perceived loudness while creating enough headroom.
+        let compensationStrength: Float = 0.35
+        let headroomDB: Float = 1.0
+        let targetDB = -max(0, maxBoost - headroomDB) * compensationStrength
+        let clampedDB = clamp(targetDB, -9, 0)
+        setPreGainSmooth(dbToLinear(clampedDB), seconds: 0.18)
+    }
+    
     func setEQEnabled(_ enabled: Bool) {
         audioQueue.async { [weak self] in
             guard let self else { return }
@@ -222,12 +324,25 @@ final class AudioEnginePlayer: ObservableObject {
     func applyEQ(preampDB: Float, gainsDB: [Float]) {
         audioQueue.async { [weak self] in
             guard let self else { return }
-            let maxBoost = max(0, gainsDB.max() ?? 0)
-            let compensated = preampDB - maxBoost
-            self.eq.globalGain = max(-24, min(24, compensated))
-            for i in 0..<min(self.eq.bands.count, gainsDB.count) {
-                self.eq.bands[i].gain = gainsDB[i]
+            
+            // UI remains ±12 dB. When limiter is ON we softly cap extreme boosts (see clampedEQGain)
+            // to reduce audible pumping/distortion. When limiter is OFF we allow full range (user requested).
+            let n = min(self.eq.bands.count, gainsDB.count)
+            var applied: [Float] = []
+            applied.reserveCapacity(n)
+            
+            for i in 0..<n {
+                let g = self.clampedEQGain(bandIndex: i, gainDB: gainsDB[i])
+                applied.append(g)
+                self.eq.bands[i].gain = g
             }
+            
+            // Apply user preamp directly (still useful if you want to trim overall level).
+            self.eq.globalGain = max(-24, min(24, preampDB))
+            
+            // Update Auto-Gain based on max positive EQ boost.
+            self.lastEQMaxBoostDB = max(0, applied.max() ?? 0)
+            self.updateAutoGainLocked()
         }
     }
     
@@ -244,24 +359,80 @@ final class AudioEnginePlayer: ObservableObject {
     func applyTone(bassPercent: Float, treblePercent: Float) {
         audioQueue.async { [weak self] in
             guard let self else { return }
-            let bassGain = max(-12, min(12, bassPercent / 100 * 12))
-            let trebleGain = max(-12, min(12, treblePercent / 100 * 12))
+            
+            // Pro rule for Tone in AmpCore:
+            // - 0% = 0 dB (neutral)
+            // - >0% = boost only
+            // - When limiter is ON, treble boost is softly reduced at very high Drive to prevent audible pumping.
+            let bP = max(0, min(100, bassPercent)) / 100
+            let tP = max(0, min(100, treblePercent)) / 100
+            
+            let limiterOn = !self.limiter.bypass
+            
+            // lastLimiterDriveDB is ~0..7 dB in our mapping. Normalize to 0..1.
+            let driveNorm = clamp(self.lastLimiterDriveDB / 7.0, 0, 1)
+            
+            let bassMax: Float = 12
+            // Limiter ON: treble max is 8 dB at low drive, down to ~6 dB at max drive.
+            // Limiter OFF: allow full 12 dB (user wants freedom even if it clips).
+            let trebleMax: Float = limiterOn ? (8 - 2 * driveNorm) : 12
+            
+            // Nonlinear curve: more resolution at low values, less aggressive at the top.
+            let bassGain: Float = bassMax * powf(bP, 1.15)
+            let trebleGain: Float = trebleMax * powf(tP, 1.60)
             
             if self.toneEQ.bands.count >= 2 {
                 self.toneEQ.bands[0].gain = bassGain
                 self.toneEQ.bands[1].gain = trebleGain
             }
+            
+            self.lastToneMaxBoostDB = max(bassGain, trebleGain)
+            self.updateAutoGainLocked()
         }
     }
     
     func setLimiterEnabled(_ enabled: Bool) {
         audioQueue.async { [weak self] in
-            self?.limiter.bypass = !enabled
+            guard let self else { return }
+            self.limiter.bypass = !enabled
+            // When turning limiter OFF, keep loudness constant (no auto-gain). When ON, re-evaluate headroom.
+            self.updateAutoGainLocked()
         }
     }
     
     func isLimiterEnabled() -> Bool {
         !limiter.bypass
+    }
+    
+    
+    /// 0...100% amount maps to PeakLimiter pre-gain/attack/release.
+    /// 0% is neutral (no added drive).
+    func applyLimiterAmount(_ percent: Float) {
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            let p = max(0, min(100, percent)) / 100
+            
+            
+            // Pro-safe mapping: avoid audible pumping, especially with high Treble + Drive.
+            // Percent controls *protection strength*, not "make it loud".
+            let totalBoost = max(self.lastEQMaxBoostDB, self.lastToneMaxBoostDB) // 0..12
+            let boostPenalty = clamp((totalBoost - 3) / 9, 0, 1) // starts penalizing after +3 dB boost
+            
+            // Drive: 0 dB .. +7 dB with gentle curve; further reduced when boosts are high.
+            let baseDrive: Float = 7 * powf(p, 1.20)
+            let driveDB: Float = baseDrive * (1 - 0.70 * boostPenalty)
+            
+            // PeakLimiter params (seconds)
+            // Longer release prevents audible "up-down" pumping. Slightly longer at higher amounts.
+            let attack: Float = 0.0010 // 1 ms
+            let release: Float = 0.12 + (0.38 * p) // 120 ms .. 500 ms
+            
+            let au = self.limiter.audioUnit
+            AudioUnitSetParameter(au, kLimiterParam_AttackTime, kAudioUnitScope_Global, 0, attack, 0)
+            AudioUnitSetParameter(au, kLimiterParam_DecayTime,  kAudioUnitScope_Global, 0, release, 0)
+            AudioUnitSetParameter(au, kLimiterParam_PreGain,    kAudioUnitScope_Global, 0, driveDB, 0)
+            self.lastLimiterDriveDB = driveDB
+        }
     }
     
     // MARK: - Transport
@@ -660,11 +831,13 @@ final class AudioEnginePlayer: ObservableObject {
     
     private func configureEQDefaults() {
         let freqs: [Float] = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000]
+        // Bandwidth is in octaves. Wider in low-end, slightly narrower in highs for a more 'pro' curve.
+        let bws: [Float] = [2.6, 2.0, 1.4, 1.15, 1.05, 1.0, 0.95, 0.85, 0.8]
         for i in 0..<min(eq.bands.count, freqs.count) {
             let b = eq.bands[i]
             b.filterType = .parametric
             b.frequency = freqs[i]
-            b.bandwidth = 1.0
+            b.bandwidth = bws[min(i, bws.count - 1)]
             b.gain = 0
             b.bypass = true
         }
@@ -675,20 +848,24 @@ final class AudioEnginePlayer: ObservableObject {
         if toneEQ.bands.count >= 1 {
             let b = toneEQ.bands[0]
             b.filterType = .lowShelf
-            b.frequency = 120
+            b.frequency = 90
             b.gain = 0
             b.bypass = false
         }
         if toneEQ.bands.count >= 2 {
             let b = toneEQ.bands[1]
             b.filterType = .highShelf
-            b.frequency = 8000
+            b.frequency = 7500
             b.gain = 0
             b.bypass = false
         }
     }
     
     private func configureLimiterDefaults() {
-        // Defaults are fine
+        // PeakLimiter defaults (neutral but safe)
+        let au = limiter.audioUnit
+        AudioUnitSetParameter(au, kLimiterParam_AttackTime, kAudioUnitScope_Global, 0, 0.0010, 0)
+        AudioUnitSetParameter(au, kLimiterParam_DecayTime,  kAudioUnitScope_Global, 0, 0.12,   0)
+        AudioUnitSetParameter(au, kLimiterParam_PreGain,    kAudioUnitScope_Global, 0, 0.0,    0)
     }
 }

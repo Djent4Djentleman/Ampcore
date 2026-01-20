@@ -28,55 +28,61 @@ struct PlayerView: View {
     @AppStorage("player.sleepEndTs") private var sleepEndTs: Double = 0
     
     private let oneSecTick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-    
     var body: some View {
-        VStack(spacing: 14) {
-            coverBlock
-            
-            if hasTrack {
-                modesBlock
-                waveformContainer
-                    .padding(.top, 26)
-                    .padding(.bottom, 10)
-                timeBlock
-                sleepStatusBlock
-            } else {
-                ContentUnavailableView(
-                    "Nothing playing",
-                    systemImage: "play.circle",
-                    description: Text("Pick a track in Library to start.")
-                )
-                .padding(.top, 20)
+        GeometryReader { geo in
+            let side = max(0, geo.size.width - 16) // 8 + 8 horizontal padding
+            VStack(spacing: 14) {
+                coverBlock
+                    .frame(width: side, height: side, alignment: .center)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .layoutPriority(1)
+                
+                if hasTrack {
+                    modesBlock
+                    waveformContainer
+                        .padding(.top, 26)
+                        .padding(.bottom, 10)
+                    timeBlock
+                    sleepStatusBlock
+                } else {
+                    ContentUnavailableView(
+                        "Nothing playing",
+                        systemImage: "play.circle",
+                        description: Text("Pick a track in Library to start.")
+                    )
+                    .padding(.top, 20)
+                }
+                
+                Spacer(minLength: 12)
             }
-            
-            Spacer(minLength: 12)
-        }
-        .padding(.horizontal, 8)
-        .padding(.top, 8)
-        .padding(.bottom, 8)
-        .background(backgroundView.ignoresSafeArea())
-        .gesture(playerGestures)
-        .confirmationDialog("Sleep timer", isPresented: $showTimerDialog) {
-            Button("15 minutes") { setSleepTimer(minutes: 15) }
-            Button("30 minutes") { setSleepTimer(minutes: 30) }
-            Button("1 hour") { setSleepTimer(minutes: 60) }
-            if sleepEndDate != nil {
-                Button("Turn off", role: .destructive) { cancelSleepTimer() }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
+            .padding(.bottom, 8)
+            .background(backgroundView.ignoresSafeArea())
+            .gesture(playerGestures)
+            .confirmationDialog("Sleep timer", isPresented: $showTimerDialog) {
+                Button("15 minutes") { setSleepTimer(minutes: 15) }
+                Button("30 minutes") { setSleepTimer(minutes: 30) }
+                Button("1 hour") { setSleepTimer(minutes: 60) }
+                if sleepEndDate != nil {
+                    Button("Turn off", role: .destructive) { cancelSleepTimer() }
+                }
+                Button("Cancel", role: .cancel) {}
             }
-            Button("Cancel", role: .cancel) {}
-        }
-        .sheet(isPresented: $showSettingsSheet) {
-            NavigationStack { SettingsRootView() }
-        }
-        .onAppear {
-            scrubProgress = env.player.playbackProgress
-        }
-        .onChange(of: env.player.playbackProgress) { _, v in
-            guard !isScrubbing && !isWaveScrubbing else { return }
-            scrubProgress = v
-        }
-        .onReceive(oneSecTick) { _ in
-            handleSleepTimerTick()
+            .sheet(isPresented: $showSettingsSheet) {
+                NavigationStack { SettingsRootView() }
+            }
+            .onAppear {
+                scrubProgress = env.player.playbackProgress
+            }
+            .onChange(of: env.player.playbackProgress) { _, v in
+                guard !isScrubbing && !isWaveScrubbing else { return }
+                scrubProgress = v
+            }
+            .onReceive(oneSecTick) { _ in
+                handleSleepTimerTick()
+            }
         }
     }
     
@@ -88,35 +94,40 @@ struct PlayerView: View {
     
     // MARK: - Cover
     
+    
     private var coverBlock: some View {
         ZStack(alignment: .bottomLeading) {
             coverImage
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                .shadow(color: .black.opacity(0.6), radius: 28, x: 0, y: 16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                .clipped()
             
             LinearGradient(
-                colors: [.clear, .black.opacity(0.75)],
+                colors: [.clear, .black.opacity(0.78)],
                 startPoint: .top,
                 endPoint: .bottom
             )
-            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
             
             VStack(alignment: .leading, spacing: 6) {
                 Text(trackTitle)
                     .font(.headline.weight(.semibold))
                     .lineLimit(1)
-                Text(trackSubtitle)
-                    .font(.subheadline)
-                    .opacity(0.75)
-                    .lineLimit(1)
+                
+                if !trackSubtitle.isEmpty {
+                    Text(trackSubtitle)
+                        .font(.subheadline)
+                        .opacity(0.75)
+                        .lineLimit(1)
+                }
             }
             .foregroundStyle(.white)
             .padding(16)
         }
-        .frame(maxWidth: .infinity)
-        .aspectRatio(1, contentMode: .fit)
-        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, alignment: .center)
+        .aspectRatio(1, contentMode: .fit) // square, fills available width
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .compositingGroup() // smoother corners on scaled images
+        .shadow(color: .black.opacity(0.55), radius: 26, x: 0, y: 14)
+        .padding(.horizontal, 8) // Poweramp-like tight side margins
     }
     
     // MARK: - Modes

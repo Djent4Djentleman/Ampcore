@@ -13,8 +13,15 @@ struct EQView: View {
     
     @State private var dspWorkItem: DispatchWorkItem?
     
+    // Prevent the response scroller from reacting while adjusting knobs.
+    @State private var isAnyKnobDragging: Bool = false
+    
     private let bandLabels: [String] = ["Pre","31","62","125","250","500","1K","2K","4K","8K"]
     private let bandRange: ClosedRange<Double> = -12...12
+    
+    // Layout tuning (keeps small phones readable)
+    private let sliderGap: CGFloat = 10
+    private let sliderTrackHeight: CGFloat = 214
     
     private var store: EQStore { env.eqStore }
     
@@ -25,6 +32,7 @@ struct EQView: View {
                 
                 responsePanel
                     .padding(.horizontal, 16)
+                    .padding(.bottom, 6)
                 
                 bottomPanel
                     .padding(.horizontal, 16)
@@ -39,13 +47,7 @@ struct EQView: View {
                 focusedIndex = min(max(focusedIndex, 0), bandLabels.count - 1)
                 syncDSP()
             }
-            .onChange(of: store.snapshot.eqEnabled) { _, newValue in
-                if !newValue {
-                    store.snapshot.toneEnabled = false
-                    store.snapshot.limiterEnabled = false
-                }
-                scheduleDSP()
-            }
+            .onChange(of: store.snapshot.eqEnabled) { _, _ in scheduleDSP() }
             .onChange(of: store.snapshot.toneEnabled) { _, _ in scheduleDSP() }
             .onChange(of: store.snapshot.limiterEnabled) { _, _ in scheduleDSP() }
             .onChange(of: store.snapshot.bass) { _, _ in scheduleDSP() }
@@ -79,8 +81,9 @@ struct EQView: View {
     private var slidersRow: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: true) {
-                HStack(spacing: 3) {
+                HStack(spacing: sliderGap) {
                     ForEach(0..<bandLabels.count, id: \.self) { idx in
+                        let isPreamp = (idx == 0)
                         VStack(spacing: 10) {
                             VerticalEQSlider(
                                 value: Binding(
@@ -95,7 +98,7 @@ struct EQView: View {
                                 enabled: store.snapshot.eqEnabled,
                                 ink: ink
                             )
-                            .frame(width: 34, height: 210)
+                            .frame(width: 30, height: sliderTrackHeight)
                             
                             Text(bandLabels[idx])
                                 .font(.caption2.weight(.semibold))
@@ -106,10 +109,35 @@ struct EQView: View {
                                 .font(.caption2)
                                 .foregroundStyle(ink.opacity(store.snapshot.eqEnabled ? 0.65 : 0.25))
                         }
-                        .frame(width: 40)
+                        .padding(.vertical, isPreamp ? 8 : 0)
+                        .padding(.horizontal, isPreamp ? 6 : 0)
+                        .background {
+                            if isPreamp {
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .fill(.ultraThinMaterial)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                            .stroke(ink.opacity(0.18), lineWidth: 1)
+                                    )
+                            }
+                        }
+                        .padding(.trailing, isPreamp ? 8 : 0)
+                        .frame(width: isPreamp ? 56 : 34)
                         .id(idx)
                     }
                 }
+                // Subtle separators between tracks (single dashed line per gap)
+                .background(
+                    BetweenTrackSeparators(
+                        count: bandLabels.count,
+                        gap: sliderGap,
+                        preWidth: 56,
+                        bandWidth: 34,
+                        trackHeight: sliderTrackHeight,
+                        ink: ink.opacity(store.snapshot.eqEnabled ? 0.16 : 0.10)
+                    )
+                    .allowsHitTesting(false)
+                )
                 .padding(.horizontal, 16)
             }
             .onAppear { scrollProxy = proxy }
@@ -225,6 +253,7 @@ struct EQView: View {
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { g in
+                            guard !isAnyKnobDragging else { return }
                             let p = min(max(g.location.x / max(w, 1), 0), 1)
                             let idx = Int((p * CGFloat(count - 1)).rounded())
                             let clamped = max(0, min(count - 1, idx))
@@ -246,45 +275,56 @@ struct EQView: View {
     // MARK: - Bottom panel
     
     private var bottomPanel: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 6) {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(spacing: 10) {
                 modeButton(title: "Equ", isOn: store.snapshot.eqEnabled) {
                     withAnimation(.easeInOut(duration: 0.18)) { store.snapshot.eqEnabled.toggle() }
                 }
-                .frame(width: 96)
                 
-                presetMenuButton
+                modeButton(title: "Tone", isOn: store.snapshot.toneEnabled) {
+                    withAnimation(.easeInOut(duration: 0.18)) { store.snapshot.toneEnabled.toggle() }
+                }
+                
+                modeButton(title: "Limit", isOn: store.snapshot.limiterEnabled) {
+                    withAnimation(.easeInOut(duration: 0.18)) { store.snapshot.limiterEnabled.toggle() }
+                }
             }
+            .frame(width: 96)
             
-            HStack(spacing: 6) {
-                VStack(spacing: 10) {
-                    modeButton(title: "Tone", isOn: store.snapshot.toneEnabled) {
-                        withAnimation(.easeInOut(duration: 0.18)) { store.snapshot.toneEnabled.toggle() }
-                    }
-                    .opacity(store.snapshot.eqEnabled ? 1.0 : 0.45)
-                    
-                    modeButton(title: "Limit", isOn: store.snapshot.limiterEnabled) {
-                        withAnimation(.easeInOut(duration: 0.18)) { store.snapshot.limiterEnabled.toggle() }
-                    }
-                    .opacity(store.snapshot.eqEnabled ? 1.0 : 0.45)
-                }
-                .frame(width: 96)
+            VStack(spacing: 10) {
+                presetMenuButton
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 
-                HStack(spacing: 18) {
+                // Knobs layout: Bass+Treble on the first row, Drive below (centered)
+                VStack(spacing: 14) {
+                    HStack(spacing: 28) {
+                        ToneKnob(
+                            title: "Bass",
+                            value: Binding(get: { store.snapshot.bass }, set: { store.snapshot.bass = $0; scheduleDSP() }),
+                            enabled: store.snapshot.toneEnabled,
+                            ink: ink,
+                            globalDragging: $isAnyKnobDragging
+                        )
+                        ToneKnob(
+                            title: "Treble",
+                            value: Binding(get: { store.snapshot.treble }, set: { store.snapshot.treble = $0; scheduleDSP() }),
+                            enabled: store.snapshot.toneEnabled,
+                            ink: ink,
+                            globalDragging: $isAnyKnobDragging
+                        )
+                    }
+                    
                     ToneKnob(
-                        title: "Bass",
-                        value: Binding(get: { store.snapshot.bass }, set: { store.snapshot.bass = $0; scheduleDSP() }),
-                        enabled: store.snapshot.toneEnabled,
-                        ink: ink
-                    )
-                    ToneKnob(
-                        title: "Treble",
-                        value: Binding(get: { store.snapshot.treble }, set: { store.snapshot.treble = $0; scheduleDSP() }),
-                        enabled: store.snapshot.toneEnabled,
-                        ink: ink
+                        title: "Drive",
+                        value: Binding(get: { store.snapshot.limiterAmount }, set: { store.snapshot.limiterAmount = $0; scheduleDSP() }),
+                        enabled: store.snapshot.limiterEnabled,
+                        ink: ink,
+                        globalDragging: $isAnyKnobDragging
                     )
                 }
+                .frame(maxWidth: .infinity)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
     
@@ -341,7 +381,7 @@ struct EQView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(ink.opacity(0.7))
             }
-            .frame(maxWidth: 260, alignment: .center)
+            .frame(maxWidth: 220, alignment: .center)
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
             .background(
@@ -397,7 +437,8 @@ struct EQView: View {
         env.player.setToneEnabled(s.toneEnabled)
         env.player.applyTone(bassPercent: Float(s.bass), treblePercent: Float(s.treble))
         
-        env.player.setLimiterEnabled(s.limiterEnabled && s.eqEnabled)
+        env.player.setLimiterEnabled(s.limiterEnabled)
+        env.player.applyLimiterAmount(Float(s.limiterAmount))
     }
 }
 
@@ -411,10 +452,9 @@ private struct VerticalEQSlider: View {
     
     @GestureState private var isDragging: Bool = false
     
-    private let handleW: CGFloat = 22
-    private let handleH: CGFloat = 54
-    private let trackW: CGFloat = 3
-    private let activeInset: CGFloat = 33
+    private let handleW: CGFloat = 28
+    private let handleH: CGFloat = 68
+    private let trackW: CGFloat = 1.4
     
     private var trackWidth: CGFloat { isDragging ? (trackW + 1) : trackW }
     private var handleStroke: CGFloat { isDragging ? 1.6 : 1.0 }
@@ -422,45 +462,43 @@ private struct VerticalEQSlider: View {
     var body: some View {
         GeometryReader { geo in
             let h = geo.size.height
-            let activeTop = activeInset
-            let activeBottom = max(activeTop + 1, h - activeInset)
-            let activeH = activeBottom - activeTop
+            let minCenter = handleH * 0.5
+            let maxCenter = max(minCenter + 1, h - handleH * 0.5)
+            let travel = max(1, maxCenter - minCenter)
             
             let t = normalized(value)
-            let yRaw = activeTop + (1 - t) * activeH
-            let yCenter = min(max(yRaw, handleH * 0.5), h - handleH * 0.5)
+            let yRaw = minCenter + (1 - t) * travel
+            let yCenter = min(max(yRaw, minCenter), maxCenter)
+            
+            let trackInk = Color.black.opacity(enabled ? 1.0 : 0.35)
             
             ZStack {
+                // Track spans full height; handle is clamped so its edges align with the track ends at extremes.
                 Capsule(style: .continuous)
-                    .fill(ink.opacity(0.18))
-                    .frame(width: trackWidth)
+                    .fill(trackInk)
+                    .frame(width: trackWidth, height: h)
+                    .position(x: geo.size.width * 0.5, y: h * 0.5)
                 
-                VStack(spacing: 3) {
-                    dashedStack
-                    Spacer(minLength: 0)
-                    dashedStack
-                }
-                .frame(width: trackWidth)
-                .padding(.top, 6)
-                .padding(.bottom, 6)
-                .allowsHitTesting(false)
+                // Single ticks (one per side) at the top/bottom center limits.
+                limitTickLine(y: minCenter, in: geo.size.width, totalWidth: 34, color: trackInk)
+                limitTickLine(y: maxCenter, in: geo.size.width, totalWidth: 34, color: trackInk)
                 
                 Rectangle()
                     .fill(ink.opacity(0.30))
                     .frame(width: 28, height: 1)
-                    .offset(y: activeTop + activeH * 0.5 - h * 0.5)
+                    .position(x: geo.size.width * 0.5, y: h * 0.5)
                     .allowsHitTesting(false)
                 
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(Color.white.opacity(enabled ? 1.0 : 0.75))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .stroke(ink.opacity(0.55), lineWidth: handleStroke)
                     )
                     .overlay(
-                        Rectangle()
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
                             .fill(ink.opacity(0.90))
-                            .frame(width: handleW - 8, height: 2)
+                            .frame(width: handleW - 8, height: 3)
                     )
                     .frame(width: handleW, height: handleH)
                     .position(x: geo.size.width * 0.5, y: yCenter)
@@ -471,22 +509,30 @@ private struct VerticalEQSlider: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { g in
                         guard enabled else { return }
-                        let y = min(max(g.location.y, max(activeTop, handleH * 0.5)), min(activeBottom, h - handleH * 0.5))
-                        let tNew = 1 - ((y - activeTop) / max(activeH, 1))
+                        let y = min(max(g.location.y, minCenter), maxCenter)
+                        let tNew = 1 - ((y - minCenter) / travel)
                         value = denormalized(tNew)
                     }
             )
         }
     }
-    
-    private var dashedStack: some View {
-        VStack(spacing: 3) {
-            ForEach(0..<3, id: \.self) { _ in
-                Rectangle()
-                    .fill(ink.opacity(0.22))
-                    .frame(width: trackW, height: 3)
-            }
+    private func limitTickLine(y: CGFloat, in viewWidth: CGFloat, totalWidth: CGFloat, color: Color) -> some View {
+        let gap: CGFloat = 8
+        let seg = max(0, (totalWidth - gap) / 2)
+        
+        return Path { p in
+            let mid = viewWidth * 0.5
+            // left segment
+            p.move(to: CGPoint(x: mid - gap * 0.5 - seg, y: 0))
+            p.addLine(to: CGPoint(x: mid - gap * 0.5, y: 0))
+            // right segment
+            p.move(to: CGPoint(x: mid + gap * 0.5, y: 0))
+            p.addLine(to: CGPoint(x: mid + gap * 0.5 + seg, y: 0))
         }
+        .stroke(color, style: StrokeStyle(lineWidth: 1, lineCap: .round))
+        .frame(width: viewWidth, height: 1)
+        .position(x: viewWidth * 0.5, y: y)
+        .allowsHitTesting(false)
     }
     
     private func normalized(_ v: Double) -> CGFloat {
@@ -502,44 +548,90 @@ private struct VerticalEQSlider: View {
     }
 }
 
+// MARK: - Between-track separators
+
+/// Draws subtle dashed vertical separators *between* slider tracks.
+/// Each gap gets a single thin line centered between the two tracks.
+private struct BetweenTrackSeparators: View {
+    let count: Int
+    let gap: CGFloat
+    let preWidth: CGFloat
+    let bandWidth: CGFloat
+    let trackHeight: CGFloat
+    let ink: Color
+    
+    var body: some View {
+        GeometryReader { geo in
+            let h = min(trackHeight, geo.size.height)
+            
+            Path { p in
+                guard count >= 2 else { return }
+                var x: CGFloat = 0
+                for i in 0..<(count - 1) {
+                    let w = (i == 0) ? preWidth : bandWidth
+                    x += w
+                    let mid = x + gap * 0.5
+                    p.move(to: CGPoint(x: mid, y: 0))
+                    p.addLine(to: CGPoint(x: mid, y: h))
+                    x += gap
+                }
+            }
+            .stroke(
+                ink,
+                style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: [3, 8], dashPhase: 0)
+            )
+        }
+    }
+}
+
 private struct ToneKnob: View {
     let title: String
     @Binding var value: Double
     let enabled: Bool
     let ink: Color
+    @Binding var globalDragging: Bool
     
-    private let range: ClosedRange<Double> = -100...100
+    /// 0% = neutral (0 dB). Values above 0 add boost.
+    private let range: ClosedRange<Double> = 0...100
     
     var body: some View {
+        let knobSize: CGFloat = 104
+        
         VStack(spacing: 6) {
-            HStack {
+            // Keep label + percent anchored to the knob width (prevents Drive from stretching apart).
+            HStack(spacing: 10) {
                 Text(title)
                     .font(.caption)
                     .foregroundStyle(ink.opacity(enabled ? 0.9 : 0.35))
-                Spacer()
                 Text("\(Int(value))%")
                     .font(.caption2)
                     .foregroundStyle(ink.opacity(enabled ? 0.65 : 0.25))
             }
+            .frame(width: knobSize)
+            .frame(maxWidth: knobSize, alignment: .center)
             
             ZStack {
                 Circle().fill(.thinMaterial)
-                Circle().stroke(ink.opacity(0.22), lineWidth: 1)
+                Circle().stroke(ink.opacity(0.55), lineWidth: 1.7)
                 
-                Rectangle()
-                    .fill(ink.opacity(enabled ? 0.75 : 0.25))
-                    .frame(width: 4, height: 18)
-                    .offset(y: -20)
+                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                    .fill(ink.opacity(enabled ? 0.78 : 0.25))
+                    .frame(width: 5, height: 14)
+                    .offset(y: -(knobSize * 0.33))
                     .rotationEffect(.degrees(angle))
             }
-            .frame(width: 84, height: 84)
+            .frame(width: knobSize, height: knobSize)
             .contentShape(Circle())
             .highPriorityGesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { g in
                         guard enabled else { return }
+                        globalDragging = true
                         let delta = -Double(g.translation.height) * 0.7
                         value = clamp(value + delta, range)
+                    }
+                    .onEnded { _ in
+                        globalDragging = false
                     }
             )
             .opacity(enabled ? 1.0 : 0.55)
