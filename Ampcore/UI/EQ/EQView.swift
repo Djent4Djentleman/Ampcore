@@ -1,4 +1,5 @@
 import SwiftUI
+import QuartzCore
 
 struct EQView: View {
     @EnvironmentObject private var env: AppEnvironment
@@ -415,26 +416,39 @@ struct EQView: View {
     }
     
     private func modeButton(title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
-        let fill = isOn ? controlFillOn : controlFillOff
-        let stroke = isOn
-        ? ink.opacity(cs == .dark ? 0.42 : 0.24)
-        : controlStroke
+        // iOS 18+: keep a consistent "frosted" look, but with clear ON/OFF contrast.
+        // ON  -> black pill
+        // OFF -> gray pill
+        // Blur (material) is ALWAYS present under the tint.
+        let tint: Color = isOn ? Color.black.opacity(0.88) : Color(white: cs == .dark ? 0.25 : 0.86).opacity(0.88)
+        let textColor: Color = isOn ? Color.white : Color.black.opacity(0.92)
+        
+        // Subtle outline so the pill reads on both light/dark backgrounds.
+        let outline: Color = (cs == .dark)
+        ? Color.white.opacity(isOn ? 0.22 : 0.14)
+        : Color.black.opacity(isOn ? 0.18 : 0.10)
         
         return Button(action: action) {
             Text(title)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle((isOn && cs == .dark) ? Color.black.opacity(0.92) : ink.opacity(isOn ? 1.0 : 0.85))
+                .foregroundStyle(textColor)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
                 .background(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(fill)
+                        .fill(.ultraThinMaterial)   // ALWAYS blur
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(tint)         // ON/OFF tint
+                        )
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(stroke, lineWidth: 1.2)
+                        .stroke(outline, lineWidth: 1.0)
                 )
-                .shadow(color: .black.opacity(isOn ? 0.18 : 0.0), radius: 10, x: 0, y: 6)
+                .shadow(color: .black.opacity(cs == .dark ? 0.35 : 0.18),
+                        radius: isOn ? 10 : 6,
+                        x: 0, y: isOn ? 6 : 4)
         }
         .buttonStyle(.plain)
     }
@@ -476,6 +490,11 @@ private struct VerticalEQSlider: View {
     
     @GestureState private var isDragging: Bool = false
     
+    // Performance: during drag we update a local value every event, but throttle
+    // writes back to the binding (which can trigger DSP / model updates).
+    @State private var dragValue: Double? = nil
+    @State private var lastCommitTime: CFTimeInterval = 0
+    
     private let handleW: CGFloat = 22
     private let handleH: CGFloat = 54
     // Base track thickness (bottom segment).
@@ -502,7 +521,8 @@ private struct VerticalEQSlider: View {
             let activeBottom = max(activeTop + 1, h - activeInset)
             let activeH = activeBottom - activeTop
             
-            let t = normalized(value)
+            let displayValue = dragValue ?? value
+            let t = normalized(displayValue)
             let yRaw = activeTop + (1 - t) * activeH
             let yCenter = min(max(yRaw, handleH * 0.5), h - handleH * 0.5)
             
@@ -614,7 +634,28 @@ private struct VerticalEQSlider: View {
                         
                         let y = min(max(g.location.y, max(activeTop, handleH * 0.5)), min(activeBottom, h - handleH * 0.5))
                         let tNew = 1 - ((y - activeTop) / max(activeH, 1))
-                        value = denormalized(tNew)
+                        let newValue = denormalized(tNew)
+                        
+                        // Always update local UI immediately.
+                        var tx = Transaction()
+                        tx.animation = nil
+                        withTransaction(tx) {
+                            dragValue = newValue
+                        }
+                        
+                        // Throttle binding writes to avoid stutters if the binding triggers DSP work.
+                        let now = CACurrentMediaTime()
+                        if now - lastCommitTime > 1.0 / 45.0 {
+                            lastCommitTime = now
+                            value = newValue
+                        }
+                    }
+                    .onEnded { _ in
+                        guard enabled else { dragValue = nil; return }
+                        if let final = dragValue {
+                            value = final
+                        }
+                        dragValue = nil
                     }
             )
         }
