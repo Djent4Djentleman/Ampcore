@@ -34,6 +34,8 @@ struct LibraryView: View {
             } else {
                 ForEach(filteredTracks, id: \.objectID) { t in
                     row(t)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                         .listRowBackground(currentRowBackground(for: t))
                         .contentShape(Rectangle())
                         .onTapGesture { tapTrack(t) }
@@ -43,14 +45,6 @@ struct LibraryView: View {
         .navigationTitle("All Songs")
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic))
         .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button {
-                    env.navigation.showSettings()
-                } label: {
-                    Image(systemName: "gearshape")
-                }
-            }
-            
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
                     Picker("Sort", selection: $sort) {
@@ -133,48 +127,36 @@ struct LibraryView: View {
     // MARK: - Row
     
     private func row(_ t: CDTrack) -> some View {
-        HStack(spacing: 12) {
-            artwork(t)
-                .frame(width: 46 * rowScale, height: 46 * rowScale)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            
-            VStack(alignment: .leading, spacing: 4) {
-                Text(t.title)
-                    .font(.system(size: 15 * rowScale, weight: .semibold))
-                    .lineLimit(1)
-                
-                Text([t.artist, t.album].compactMap { $0 }.joined(separator: " • "))
-                    .font(.system(size: 12 * rowScale))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+        let view = TrackRowView(
+            track: t,
+            rowScale: rowScale,
+            isCurrent: t.objectID == env.player.currentTrackID,
+            isPlaying: env.player.isPlaying
+        )
+        
+        // iOS 17+: subtle "Apple Music"-style shrink while scrolling.
+        if #available(iOS 17.0, *) {
+            return view.scrollTransition(.animated, axis: .vertical) { content, phase in
+                content
+                    .scaleEffect(phase.isIdentity ? 1.0 : 0.95)
+                    .opacity(phase.isIdentity ? 1.0 : 0.88)
             }
-            
-            Spacer()
-            
-            if t.objectID == env.player.currentTrackID {
-                Image(systemName: env.player.isPlaying ? "speaker.wave.2.fill" : "speaker.slash.fill")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+        } else {
+            return view
         }
-        .padding(.vertical, 6 * rowScale)
     }
     
-    private func artwork(_ t: CDTrack) -> some View {
+    private func currentRowBackground(for t: CDTrack) -> some View {
         Group {
-            if let d = t.artworkData, let img = UIImage(data: d) {
-                Image(uiImage: img).resizable().scaledToFill()
+            if t.objectID == env.player.currentTrackID {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.secondary.opacity(0.14))
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
             } else {
-                Image("DefaultArtwork").resizable().scaledToFill()
+                Color.clear
             }
         }
-        .clipped()
-    }
-    
-    private func currentRowBackground(for t: CDTrack) -> Color {
-        t.objectID == env.player.currentTrackID
-        ? Color.secondary.opacity(0.14)
-        : Color.clear
     }
     
     // MARK: - Actions

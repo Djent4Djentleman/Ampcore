@@ -2,6 +2,7 @@ import SwiftUI
 
 struct EQView: View {
     @EnvironmentObject private var env: AppEnvironment
+    @Environment(\.colorScheme) private var cs
     
     private let ink = Color.primary
     
@@ -13,54 +14,81 @@ struct EQView: View {
     
     @State private var dspWorkItem: DispatchWorkItem?
     
-    // Prevent the response scroller from reacting while adjusting knobs.
-    @State private var isAnyKnobDragging: Bool = false
-    
     private let bandLabels: [String] = ["Pre","31","62","125","250","500","1K","2K","4K","8K"]
     private let bandRange: ClosedRange<Double> = -12...12
     
-    // Layout tuning (keeps small phones readable)
-    private let sliderGap: CGFloat = 10
-    private let sliderTrackHeight: CGFloat = 214
-    
     private var store: EQStore { env.eqStore }
+    
+    
+    // Card styling (like Settings rows)
+    private var panelFill: Color {
+        cs == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
+    }
+    
+    private var panelStroke: Color {
+        Color.primary.opacity(cs == .dark ? 0.18 : 0.12)
+    }
+    
+    // Control styling (buttons/menus)
+    private var controlFillOff: Color { panelFill }
+    private var controlFillOn: Color {
+        // Selected state should be clearly visible.
+        cs == .dark ? Color.white.opacity(0.92) : Color.black.opacity(0.14)
+    }
+    private var controlStroke: Color { ink.opacity(cs == .dark ? 0.22 : 0.16) }
     
     var body: some View {
         NavigationStack {
-            VStack(spacing: 12) {
-                slidersRow
+            ZStack {
+                (cs == .dark ? Color.black : Color.white)
+                    .ignoresSafeArea()
                 
-                responsePanel
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 6)
-                
-                bottomPanel
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 10)
-                
-                Spacer(minLength: 0)
-            }
-            .padding(.top, 10)
-            .navigationTitle("EQ")
-            .navigationBarTitleDisplayMode(.inline)
-            .onAppear {
-                focusedIndex = min(max(focusedIndex, 0), bandLabels.count - 1)
-                syncDSP()
-            }
-            .onChange(of: store.snapshot.eqEnabled) { _, _ in scheduleDSP() }
-            .onChange(of: store.snapshot.toneEnabled) { _, _ in scheduleDSP() }
-            .onChange(of: store.snapshot.limiterEnabled) { _, _ in scheduleDSP() }
-            .onChange(of: store.snapshot.bass) { _, _ in scheduleDSP() }
-            .onChange(of: store.snapshot.treble) { _, _ in scheduleDSP() }
-            .alert("Save Preset", isPresented: $showSavePreset) {
-                TextField("Name", text: $savePresetName)
-                Button("Save") {
-                    store.saveCurrentAsUserPreset(name: savePresetName)
-                    savePresetName = ""
+                VStack(spacing: 12) {
+                    slidersRow
+                        .padding(.vertical, 12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                                .fill(panelFill)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                                .stroke(panelStroke, lineWidth: 1)
+                        )
+                        .padding(.horizontal, 16)
+                    
+                    
+                    responsePanel
+                        .padding(.horizontal, 16)
+                    
+                    bottomPanel
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 10)
+                    
+                    Spacer(minLength: 0)
                 }
-                Button("Cancel", role: .cancel) { savePresetName = "" }
-            } message: {
-                Text("Create a new preset from current settings.")
+                .padding(.top, 10)
+                .navigationTitle("EQ")
+                .navigationBarTitleDisplayMode(.inline)
+                .onAppear {
+                    focusedIndex = min(max(focusedIndex, 0), bandLabels.count - 1)
+                    syncDSP()
+                }
+                .onChange(of: store.snapshot.eqEnabled) { _, _ in scheduleDSP() }
+                .onChange(of: store.snapshot.toneEnabled) { _, _ in scheduleDSP() }
+                .onChange(of: store.snapshot.limiterEnabled) { _, _ in scheduleDSP() }
+                .onChange(of: store.snapshot.limiterAmount) { _, _ in scheduleDSP() }
+                .onChange(of: store.snapshot.bass) { _, _ in scheduleDSP() }
+                .onChange(of: store.snapshot.treble) { _, _ in scheduleDSP() }
+                .alert("Save Preset", isPresented: $showSavePreset) {
+                    TextField("Name", text: $savePresetName)
+                    Button("Save") {
+                        store.saveCurrentAsUserPreset(name: savePresetName)
+                        savePresetName = ""
+                    }
+                    Button("Cancel", role: .cancel) { savePresetName = "" }
+                } message: {
+                    Text("Create a new preset from current settings.")
+                }
             }
         }
     }
@@ -80,10 +108,9 @@ struct EQView: View {
     
     private var slidersRow: some View {
         ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: true) {
-                HStack(spacing: sliderGap) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 3) {
                     ForEach(0..<bandLabels.count, id: \.self) { idx in
-                        let isPreamp = (idx == 0)
                         VStack(spacing: 10) {
                             VerticalEQSlider(
                                 value: Binding(
@@ -98,7 +125,7 @@ struct EQView: View {
                                 enabled: store.snapshot.eqEnabled,
                                 ink: ink
                             )
-                            .frame(width: 30, height: sliderTrackHeight)
+                            .frame(width: 34, height: 210)
                             
                             Text(bandLabels[idx])
                                 .font(.caption2.weight(.semibold))
@@ -109,35 +136,19 @@ struct EQView: View {
                                 .font(.caption2)
                                 .foregroundStyle(ink.opacity(store.snapshot.eqEnabled ? 0.65 : 0.25))
                         }
-                        .padding(.vertical, isPreamp ? 8 : 0)
-                        .padding(.horizontal, isPreamp ? 6 : 0)
-                        .background {
-                            if isPreamp {
-                                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                    .fill(.ultraThinMaterial)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                            .stroke(ink.opacity(0.18), lineWidth: 1)
-                                    )
-                            }
-                        }
-                        .padding(.trailing, isPreamp ? 8 : 0)
-                        .frame(width: isPreamp ? 56 : 34)
+                        .frame(width: 40)
                         .id(idx)
+                        
+                        // Visually separate Preamp from the other bands.
+                        if idx == 0 {
+                            Rectangle()
+                                .fill(Color.black.opacity(cs == .dark ? 0.35 : 0.18))
+                                .frame(width: 1, height: 230)
+                                .padding(.horizontal, 6)
+                                .accessibilityHidden(true)
+                        }
                     }
                 }
-                // Subtle separators between tracks (single dashed line per gap)
-                .background(
-                    BetweenTrackSeparators(
-                        count: bandLabels.count,
-                        gap: sliderGap,
-                        preWidth: 56,
-                        bandWidth: 34,
-                        trackHeight: sliderTrackHeight,
-                        ink: ink.opacity(store.snapshot.eqEnabled ? 0.16 : 0.10)
-                    )
-                    .allowsHitTesting(false)
-                )
                 .padding(.horizontal, 16)
             }
             .onAppear { scrollProxy = proxy }
@@ -240,34 +251,46 @@ struct EQView: View {
             let step = (w - knobW) / CGFloat(max(count - 1, 1))
             let x = CGFloat(focusedIndex) * step
             
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(ink.opacity(store.snapshot.eqEnabled ? 0.10 : 0.06))
-                .frame(width: knobW, height: h)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(ink.opacity(store.snapshot.eqEnabled ? 0.18 : 0.10), lineWidth: 1)
-                )
-                .offset(x: x)
-                .animation(.easeOut(duration: 0.12), value: focusedIndex)
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { g in
-                            guard !isAnyKnobDragging else { return }
-                            let p = min(max(g.location.x / max(w, 1), 0), 1)
-                            let idx = Int((p * CGFloat(count - 1)).rounded())
-                            let clamped = max(0, min(count - 1, idx))
-                            
-                            guard clamped != focusedIndex else { return }
-                            focusedIndex = clamped
-                            
-                            if let proxy = scrollProxy {
-                                withAnimation(.easeOut(duration: 0.12)) {
-                                    proxy.scrollTo(clamped, anchor: .center)
-                                }
+            ZStack(alignment: .leading) {
+                // Static track (full width) so the gray background does NOT move.
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(ink.opacity(store.snapshot.eqEnabled ? 0.08 : 0.05))
+                    .frame(height: h)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(ink.opacity(store.snapshot.eqEnabled ? 0.14 : 0.08), lineWidth: 1)
+                    )
+                
+                // Moving focus window.
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(ink.opacity(store.snapshot.eqEnabled ? 0.12 : 0.07))
+                    .frame(width: knobW, height: h)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(ink.opacity(store.snapshot.eqEnabled ? 0.20 : 0.10), lineWidth: 1)
+                    )
+                    .offset(x: x)
+                    .animation(.easeOut(duration: 0.12), value: focusedIndex)
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { g in
+                        guard store.snapshot.eqEnabled else { return }
+                        let p = min(max(g.location.x / max(w, 1), 0), 1)
+                        let idx = Int((p * CGFloat(count - 1)).rounded())
+                        let clamped = max(0, min(count - 1, idx))
+                        
+                        guard clamped != focusedIndex else { return }
+                        focusedIndex = clamped
+                        
+                        if let proxy = scrollProxy {
+                            withAnimation(.easeOut(duration: 0.12)) {
+                                proxy.scrollTo(clamped, anchor: .center)
                             }
                         }
-                )
+                    }
+            )
         }
         .frame(height: 44)
         .opacity(store.snapshot.eqEnabled ? 1.0 : 0.55)
@@ -275,56 +298,50 @@ struct EQView: View {
     // MARK: - Bottom panel
     
     private var bottomPanel: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(spacing: 10) {
+        VStack(spacing: 10) {
+            HStack(spacing: 6) {
                 modeButton(title: "Equ", isOn: store.snapshot.eqEnabled) {
                     withAnimation(.easeInOut(duration: 0.18)) { store.snapshot.eqEnabled.toggle() }
                 }
+                .frame(width: 96)
                 
-                modeButton(title: "Tone", isOn: store.snapshot.toneEnabled) {
-                    withAnimation(.easeInOut(duration: 0.18)) { store.snapshot.toneEnabled.toggle() }
-                }
-                
-                modeButton(title: "Limit", isOn: store.snapshot.limiterEnabled) {
-                    withAnimation(.easeInOut(duration: 0.18)) { store.snapshot.limiterEnabled.toggle() }
-                }
-            }
-            .frame(width: 96)
-            
-            VStack(spacing: 10) {
                 presetMenuButton
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                
-                // Knobs layout: Bass+Treble on the first row, Drive below (centered)
-                VStack(spacing: 14) {
-                    HStack(spacing: 28) {
-                        ToneKnob(
-                            title: "Bass",
-                            value: Binding(get: { store.snapshot.bass }, set: { store.snapshot.bass = $0; scheduleDSP() }),
-                            enabled: store.snapshot.toneEnabled,
-                            ink: ink,
-                            globalDragging: $isAnyKnobDragging
-                        )
-                        ToneKnob(
-                            title: "Treble",
-                            value: Binding(get: { store.snapshot.treble }, set: { store.snapshot.treble = $0; scheduleDSP() }),
-                            enabled: store.snapshot.toneEnabled,
-                            ink: ink,
-                            globalDragging: $isAnyKnobDragging
-                        )
+            }
+            
+            HStack(spacing: 6) {
+                VStack(spacing: 10) {
+                    modeButton(title: "Tone", isOn: store.snapshot.toneEnabled) {
+                        withAnimation(.easeInOut(duration: 0.18)) { store.snapshot.toneEnabled.toggle() }
                     }
+                    
+                    modeButton(title: "Limit", isOn: store.snapshot.limiterEnabled) {
+                        withAnimation(.easeInOut(duration: 0.18)) { store.snapshot.limiterEnabled.toggle() }
+                    }
+                }
+                .frame(width: 96)
+                
+                HStack(spacing: 18) {
+                    ToneKnob(
+                        title: "Bass",
+                        value: Binding(get: { store.snapshot.bass }, set: { store.snapshot.bass = $0; scheduleDSP() }),
+                        enabled: store.snapshot.toneEnabled,
+                        ink: ink
+                    )
+                    ToneKnob(
+                        title: "Treble",
+                        value: Binding(get: { store.snapshot.treble }, set: { store.snapshot.treble = $0; scheduleDSP() }),
+                        enabled: store.snapshot.toneEnabled,
+                        ink: ink
+                    )
                     
                     ToneKnob(
                         title: "Drive",
                         value: Binding(get: { store.snapshot.limiterAmount }, set: { store.snapshot.limiterAmount = $0; scheduleDSP() }),
                         enabled: store.snapshot.limiterEnabled,
-                        ink: ink,
-                        globalDragging: $isAnyKnobDragging
+                        ink: ink
                     )
                 }
-                .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
     
@@ -381,12 +398,12 @@ struct EQView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(ink.opacity(0.7))
             }
-            .frame(maxWidth: 220, alignment: .center)
+            .frame(maxWidth: 260, alignment: .center)
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
             .background(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.black.opacity(0.06))
+                    .fill(controlFillOff)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -398,24 +415,29 @@ struct EQView: View {
     }
     
     private func modeButton(title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        let fill = isOn ? controlFillOn : controlFillOff
+        let stroke = isOn
+        ? ink.opacity(cs == .dark ? 0.42 : 0.24)
+        : controlStroke
+        
+        return Button(action: action) {
             Text(title)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(isOn ? Color.white : ink)
+                .foregroundStyle((isOn && cs == .dark) ? Color.black.opacity(0.92) : ink.opacity(isOn ? 1.0 : 0.85))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
                 .background(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(isOn ? ink : Color.black.opacity(0.06))
+                        .fill(fill)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(ink.opacity(0.16), lineWidth: 1)
+                        .stroke(stroke, lineWidth: 1.2)
                 )
+                .shadow(color: .black.opacity(isOn ? 0.18 : 0.0), radius: 10, x: 0, y: 6)
         }
         .buttonStyle(.plain)
     }
-    
     // MARK: - DSP
     
     private func scheduleDSP() {
@@ -438,7 +460,7 @@ struct EQView: View {
         env.player.applyTone(bassPercent: Float(s.bass), treblePercent: Float(s.treble))
         
         env.player.setLimiterEnabled(s.limiterEnabled)
-        env.player.applyLimiterAmount(Float(s.limiterAmount))
+        env.player.applyLimiter(amountPercent: Float(s.limiterAmount))
     }
 }
 
@@ -450,87 +472,161 @@ private struct VerticalEQSlider: View {
     let enabled: Bool
     let ink: Color
     
+    @Environment(\.colorScheme) private var cs
+    
     @GestureState private var isDragging: Bool = false
     
-    private let handleW: CGFloat = 28
-    private let handleH: CGFloat = 68
-    private let trackW: CGFloat = 1.4
+    private let handleW: CGFloat = 22
+    private let handleH: CGFloat = 54
+    // Base track thickness (bottom segment).
+    private let trackW: CGFloat = 3
+    private let activeInset: CGFloat = 33
     
-    private var trackWidth: CGFloat { isDragging ? (trackW + 1) : trackW }
-    private var handleStroke: CGFloat { isDragging ? 1.6 : 1.0 }
+    // Subtle "active" emphasis when the EQ is enabled + stronger emphasis while dragging.
+    private var activeBoost: CGFloat { enabled ? 1.06 : 1.0 }
+    private var trackWidth: CGFloat {
+        let base = trackW * activeBoost
+        return isDragging ? (base + 0.8) : base
+    }
+    private var topTrackWidth: CGFloat {
+        // Make the section above the handle *clearly* thinner than the bottom segment.
+        // Using a smaller ratio avoids the light theme reading as "same thickness".
+        max(1.2, trackWidth * 0.42)
+    }
+    private var handleStroke: CGFloat { (enabled ? 1.15 : 1.0) + (isDragging ? 0.55 : 0.0) }
     
     var body: some View {
         GeometryReader { geo in
             let h = geo.size.height
-            let minCenter = handleH * 0.5
-            let maxCenter = max(minCenter + 1, h - handleH * 0.5)
-            let travel = max(1, maxCenter - minCenter)
+            let activeTop = activeInset
+            let activeBottom = max(activeTop + 1, h - activeInset)
+            let activeH = activeBottom - activeTop
             
             let t = normalized(value)
-            let yRaw = minCenter + (1 - t) * travel
-            let yCenter = min(max(yRaw, minCenter), maxCenter)
+            let yRaw = activeTop + (1 - t) * activeH
+            let yCenter = min(max(yRaw, handleH * 0.5), h - handleH * 0.5)
             
-            let trackInk = Color.black.opacity(enabled ? 1.0 : 0.35)
+            // Track is two-tone:
+            // - Above the handle: gray (both themes)
+            // - Below the handle: white in dark / black in light
+            let topTrack = Color.gray.opacity(enabled ? 0.55 : 0.28)
+            let bottomTrack = (cs == .dark
+                               ? Color.white.opacity(enabled ? 0.95 : 0.45)
+                               : Color.black.opacity(enabled ? 0.92 : 0.38)
+            )
+            
+            // Subtle outline (kept lighter in Light mode so it doesn't "fatten" the thin top segment).
+            let trackOutline = Color.black.opacity(cs == .dark ? 0.22 : 0.10)
+            let baseOutline: CGFloat = cs == .dark ? 0.70 : 0.45
+            let bottomOutlineW: CGFloat = (enabled ? baseOutline : baseOutline * 0.85) + (isDragging ? 0.25 : 0.0)
+            let topOutlineW: CGFloat = bottomOutlineW * 0.65
+            
+            let topFillH = max(0, yCenter - handleH * 0.5)
+            let bottomFillH = max(0, h - (yCenter + handleH * 0.5))
+            let topFill = min(topFillH, h)
+            let bottomFill = min(bottomFillH, h)
             
             ZStack {
-                // Track spans full height; handle is clamped so its edges align with the track ends at extremes.
+                // Two independent segments so the "top" is truly thinner (not an overlay illusion).
+                // Bottom segment (full thickness) — from bottom up to the handle.
                 Capsule(style: .continuous)
-                    .fill(trackInk)
-                    .frame(width: trackWidth, height: h)
-                    .position(x: geo.size.width * 0.5, y: h * 0.5)
+                    .fill(bottomTrack)
+                    .frame(width: trackWidth)
+                    .mask(
+                        Rectangle()
+                            .frame(height: bottomFill)
+                            .frame(maxHeight: .infinity, alignment: .bottom)
+                    )
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .stroke(trackOutline, lineWidth: bottomOutlineW)
+                            .frame(width: trackWidth)
+                    )
                 
-                // Single ticks (one per side) at the top/bottom center limits.
-                limitTickLine(y: minCenter, in: geo.size.width, totalWidth: 34, color: trackInk)
-                limitTickLine(y: maxCenter, in: geo.size.width, totalWidth: 34, color: trackInk)
+                // Top segment (thinner) — from top down to the handle.
+                Capsule(style: .continuous)
+                    .fill(topTrack)
+                    .frame(width: topTrackWidth)
+                    .mask(
+                        Rectangle()
+                            .frame(height: topFill)
+                            .frame(maxHeight: .infinity, alignment: .top)
+                    )
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .stroke(trackOutline, lineWidth: topOutlineW)
+                            .frame(width: topTrackWidth)
+                    )
+                
+                // Horizontal dashed guides at the top/bottom limits of the handle's center.
+                dashedLimitLine(y: activeTop, in: geo.size.width, lineWidth: 28, color: topTrack)
+                dashedLimitLine(y: activeBottom, in: geo.size.width, lineWidth: 28, color: topTrack)
                 
                 Rectangle()
                     .fill(ink.opacity(0.30))
                     .frame(width: 28, height: 1)
-                    .position(x: geo.size.width * 0.5, y: h * 0.5)
+                    .offset(y: activeTop + activeH * 0.5 - h * 0.5)
                     .allowsHitTesting(false)
                 
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
                     .fill(Color.white.opacity(enabled ? 1.0 : 0.75))
+                // Subtle 3D feel (highlight at top, shade at bottom).
                     .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(ink.opacity(0.55), lineWidth: handleStroke)
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    gradient: Gradient(colors: [
+                                        Color.white.opacity(enabled ? 0.55 : 0.35),
+                                        Color.white.opacity(0.0),
+                                        Color.black.opacity(enabled ? 0.10 : 0.06)
+                                    ]),
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                            .blendMode(.overlay)
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 2, style: .continuous)
-                            .fill(ink.opacity(0.90))
-                            .frame(width: handleW - 8, height: 3)
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .stroke(Color.black.opacity(enabled ? 0.55 : 0.28), lineWidth: handleStroke)
+                    )
+                    .overlay(
+                        Rectangle()
+                        // Keep the handle's center marker identical in light/dark.
+                            .fill(Color.black.opacity(0.65))
+                            .frame(width: handleW - 8, height: 2)
                     )
                     .frame(width: handleW, height: handleH)
                     .position(x: geo.size.width * 0.5, y: yCenter)
-                    .shadow(color: .black.opacity(0.10), radius: 8, x: 0, y: 6)
+                    .scaleEffect(isDragging ? 1.035 : 1.0)
+                    .shadow(color: .black.opacity(enabled ? 0.16 : 0.10), radius: isDragging ? 12 : 8, x: 0, y: isDragging ? 9 : 6)
             }
             .contentShape(Rectangle())
-            .gesture(
+            .simultaneousGesture(
                 DragGesture(minimumDistance: 0)
+                    .updating($isDragging) { _, state, _ in
+                        state = true
+                    }
                     .onChanged { g in
                         guard enabled else { return }
-                        let y = min(max(g.location.y, minCenter), maxCenter)
-                        let tNew = 1 - ((y - minCenter) / travel)
+                        // Allow horizontal swipes to scroll the EQ without jerking slider values.
+                        guard abs(g.translation.height) > abs(g.translation.width) else { return }
+                        
+                        let y = min(max(g.location.y, max(activeTop, handleH * 0.5)), min(activeBottom, h - handleH * 0.5))
+                        let tNew = 1 - ((y - activeTop) / max(activeH, 1))
                         value = denormalized(tNew)
                     }
             )
         }
     }
-    private func limitTickLine(y: CGFloat, in viewWidth: CGFloat, totalWidth: CGFloat, color: Color) -> some View {
-        let gap: CGFloat = 8
-        let seg = max(0, (totalWidth - gap) / 2)
-        
-        return Path { p in
-            let mid = viewWidth * 0.5
-            // left segment
-            p.move(to: CGPoint(x: mid - gap * 0.5 - seg, y: 0))
-            p.addLine(to: CGPoint(x: mid - gap * 0.5, y: 0))
-            // right segment
-            p.move(to: CGPoint(x: mid + gap * 0.5, y: 0))
-            p.addLine(to: CGPoint(x: mid + gap * 0.5 + seg, y: 0))
+    
+    private func dashedLimitLine(y: CGFloat, in viewWidth: CGFloat, lineWidth: CGFloat, color: Color) -> some View {
+        Path { p in
+            p.move(to: CGPoint(x: 0, y: 0))
+            p.addLine(to: CGPoint(x: lineWidth, y: 0))
         }
-        .stroke(color, style: StrokeStyle(lineWidth: 1, lineCap: .round))
-        .frame(width: viewWidth, height: 1)
+        .stroke(color, style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: [3, 3]))
+        .frame(width: lineWidth, height: 1)
         .position(x: viewWidth * 0.5, y: y)
         .allowsHitTesting(false)
     }
@@ -548,90 +644,44 @@ private struct VerticalEQSlider: View {
     }
 }
 
-// MARK: - Between-track separators
-
-/// Draws subtle dashed vertical separators *between* slider tracks.
-/// Each gap gets a single thin line centered between the two tracks.
-private struct BetweenTrackSeparators: View {
-    let count: Int
-    let gap: CGFloat
-    let preWidth: CGFloat
-    let bandWidth: CGFloat
-    let trackHeight: CGFloat
-    let ink: Color
-    
-    var body: some View {
-        GeometryReader { geo in
-            let h = min(trackHeight, geo.size.height)
-            
-            Path { p in
-                guard count >= 2 else { return }
-                var x: CGFloat = 0
-                for i in 0..<(count - 1) {
-                    let w = (i == 0) ? preWidth : bandWidth
-                    x += w
-                    let mid = x + gap * 0.5
-                    p.move(to: CGPoint(x: mid, y: 0))
-                    p.addLine(to: CGPoint(x: mid, y: h))
-                    x += gap
-                }
-            }
-            .stroke(
-                ink,
-                style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: [3, 8], dashPhase: 0)
-            )
-        }
-    }
-}
-
 private struct ToneKnob: View {
     let title: String
     @Binding var value: Double
     let enabled: Bool
     let ink: Color
-    @Binding var globalDragging: Bool
     
-    /// 0% = neutral (0 dB). Values above 0 add boost.
     private let range: ClosedRange<Double> = 0...100
     
     var body: some View {
-        let knobSize: CGFloat = 104
-        
         VStack(spacing: 6) {
-            // Keep label + percent anchored to the knob width (prevents Drive from stretching apart).
-            HStack(spacing: 10) {
+            HStack {
                 Text(title)
                     .font(.caption)
                     .foregroundStyle(ink.opacity(enabled ? 0.9 : 0.35))
+                Spacer()
                 Text("\(Int(value))%")
                     .font(.caption2)
                     .foregroundStyle(ink.opacity(enabled ? 0.65 : 0.25))
             }
-            .frame(width: knobSize)
-            .frame(maxWidth: knobSize, alignment: .center)
             
             ZStack {
                 Circle().fill(.thinMaterial)
-                Circle().stroke(ink.opacity(0.55), lineWidth: 1.7)
+                Circle().stroke(ink.opacity(0.22), lineWidth: 1)
                 
-                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                    .fill(ink.opacity(enabled ? 0.78 : 0.25))
-                    .frame(width: 5, height: 14)
-                    .offset(y: -(knobSize * 0.33))
+                Rectangle()
+                    .fill(ink.opacity(enabled ? 0.75 : 0.25))
+                    .frame(width: 4, height: 18)
+                    .offset(y: -20)
                     .rotationEffect(.degrees(angle))
             }
-            .frame(width: knobSize, height: knobSize)
+            .frame(width: 84, height: 84)
             .contentShape(Circle())
             .highPriorityGesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { g in
                         guard enabled else { return }
-                        globalDragging = true
                         let delta = -Double(g.translation.height) * 0.7
                         value = clamp(value + delta, range)
-                    }
-                    .onEnded { _ in
-                        globalDragging = false
                     }
             )
             .opacity(enabled ? 1.0 : 0.55)

@@ -101,26 +101,35 @@ struct LibrarySettingsView: View {
         resultText = nil
         errorText = nil
         
+        defer { isScanning = false }
+        
         do {
             let bookmark = env.folderAccess.currentBookmarkData()
+            let folderURL = try env.folderAccess.resolveFolderURL()
             
-            try env.folderAccess.withResolvedAccess { folderURL in
-                let result = try MusicScanner.scanAndUpsert(
-                    folderURL: folderURL,
-                    folderBookmark: bookmark,
-                    context: moc
-                )
-                
-                if result.added == 0 && result.updated == 0 {
-                    resultText = "No changes"
-                } else {
-                    resultText = "Added \(result.added), updated \(result.updated)"
-                }
+            // Security-scoped access must stay open for the whole scan.
+            let ok = folderURL.startAccessingSecurityScopedResource()
+            if !ok { throw FolderAccessError.securityScopeDenied }
+            defer { folderURL.stopAccessingSecurityScopedResource() }
+            
+            // Run the heavy scan work off the main thread + off the main CoreData context
+            let bg = PersistenceController.shared.container.newBackgroundContext()
+            bg.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+            bg.automaticallyMergesChangesFromParent = true
+            
+            let result = try await MusicScanner.scanAndUpsert(
+                folderURL: folderURL,
+                folderBookmark: bookmark,
+                context: bg
+            )
+            
+            if result.added == 0 && result.updated == 0 {
+                resultText = "No changes"
+            } else {
+                resultText = "Added \(result.added), updated \(result.updated)"
             }
         } catch {
             errorText = error.localizedDescription
         }
-        
-        isScanning = false
     }
 }

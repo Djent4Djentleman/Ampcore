@@ -59,7 +59,7 @@ struct PlayerView: View {
             .padding(.horizontal, 8)
             .padding(.top, 8)
             .padding(.bottom, 8)
-            .background(backgroundView.ignoresSafeArea())
+            .background(backgroundView.ignoresSafeArea(edges: [.top, .horizontal]))
             .gesture(playerGestures)
             .confirmationDialog("Sleep timer", isPresented: $showTimerDialog) {
                 Button("15 minutes") { setSleepTimer(minutes: 15) }
@@ -119,7 +119,7 @@ struct PlayerView: View {
                         .lineLimit(1)
                 }
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(fgPrimary)
             .padding(16)
         }
         .frame(maxWidth: .infinity, alignment: .center)
@@ -140,13 +140,7 @@ struct PlayerView: View {
             modeButton("timer", sleepEndDate != nil) { showTimerDialog = true }
             
             Spacer()
-            
-            Button { env.navigation.showLyrics() } label: {
-                Label("Lyrics", systemImage: "quote.bubble")
-            }
-            .font(.caption.weight(.semibold))
-            .buttonStyle(.bordered)
-            .tint(.white.opacity(0.12))
+            modeButton("quote.bubble", hasLyricsForCurrentTrack) { env.navigation.showLyrics() }
         }
     }
     
@@ -168,7 +162,7 @@ struct PlayerView: View {
             }
             .gesture(waveformScrubGesture(width: geo.size.width))
         }
-        .frame(height: 112)
+        .frame(height: 170)
     }
     
     private var transportOverlay: some View {
@@ -187,7 +181,7 @@ struct PlayerView: View {
             }
         }
         .font(.system(size: 22, weight: .semibold))
-        .foregroundStyle(.white)
+        .foregroundStyle(fgPrimary)
         .shadow(radius: 16)
     }
     
@@ -221,7 +215,7 @@ struct PlayerView: View {
             Text("-" + timeString(max(env.player.duration - env.player.currentTime, 0)))
         }
         .font(.caption2.monospacedDigit())
-        .foregroundStyle(.white.opacity(0.75))
+        .foregroundStyle(fgSecondary)
     }
     
     private var sleepStatusBlock: some View {
@@ -241,7 +235,7 @@ struct PlayerView: View {
                     .buttonStyle(.bordered)
                     .tint(.white.opacity(0.12))
                 }
-                .foregroundStyle(.white.opacity(0.8))
+                .foregroundStyle(fgSecondary)
                 .padding(.vertical, 6)
             }
         }
@@ -256,6 +250,11 @@ struct PlayerView: View {
     private var track: CDTrack? {
         guard let id = env.player.currentTrackID else { return nil }
         return try? moc.existingObject(with: id) as? CDTrack
+    }
+    
+    private var hasLyricsForCurrentTrack: Bool {
+        let s = (track?.lyrics ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return !s.isEmpty
     }
     
     
@@ -283,8 +282,9 @@ struct PlayerView: View {
         }
     }
     
-    
-    
+    private var fgPrimary: Color { cs == .light ? .black : .white }
+    private var fgSecondary: Color { cs == .light ? .black.opacity(0.70) : .white.opacity(0.75) }
+    private var fgMuted: Color { cs == .light ? .black.opacity(0.55) : .white.opacity(0.55) }
     
     private var cs: ColorScheme {
         switch env.settings.theme {
@@ -305,9 +305,48 @@ struct PlayerView: View {
         }
     }
     private var backgroundView: some View {
-        ZStack {
-            coverImage.blur(radius: 70).opacity(0.35)
-            LinearGradient(colors: backgroundGradientColors, startPoint: .top, endPoint: .bottom)
+        GeometryReader { geo in
+            // Match the cover size used in portrait (width - horizontal padding*2).
+            let coverSide = max(0, geo.size.width - 16)
+            // Keep the halo local to the cover area (never reaches the tab bar).
+            let haloHeight = coverSide + 340
+            
+            ZStack(alignment: .top) {
+                // Stable base: pure white in Light, pure black in Dark (like other tabs).
+                (cs == .light ? Color.white : Color.black)
+                
+                // Localized artwork halo around the cover only.
+                if hasTrack {
+                    coverImage
+                        .blur(radius: 95)
+                        .saturation(1.40)
+                        .opacity(cs == .light ? 0.55 : 0.85)
+                        .frame(height: haloHeight)
+                        .clipped()
+                        .mask(
+                            LinearGradient(
+                                colors: [
+                                    .white,
+                                    .white.opacity(0.92),
+                                    .white.opacity(0.55),
+                                    .white.opacity(0.20),
+                                    .clear
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                }
+                
+                // Gentle shading for contrast consistency (stays within the base color).
+                LinearGradient(
+                    colors: cs == .light
+                    ? [Color.white.opacity(0.0), Color.white]
+                    : [Color.black.opacity(0.0), Color.black],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
         }
     }
     
@@ -317,7 +356,7 @@ struct PlayerView: View {
                 .frame(width: 34, height: 34)
         }
         .background(Color.white.opacity(on ? 0.16 : 0.08), in: RoundedRectangle(cornerRadius: 12))
-        .foregroundStyle(on ? .white : .white.opacity(0.55))
+        .foregroundStyle(on ? fgPrimary : fgMuted)
     }
     
     // MARK: - Transport logic (unchanged)
@@ -395,10 +434,10 @@ private struct WaveformProgressView: View {
     private let minBarHeight: CGFloat = 2
     
     // Bars density (lower = fewer bars)
-    private let barsPerPoint: CGFloat = 1.0 / 7.0
+    private let barsPerPoint: CGFloat = 1.0 / 6.0
     
     // Keep headroom so bars never hit top/bottom
-    private let headroom: CGFloat = 0.82
+    private let headroom: CGFloat = 0.97
     
     // Shape curve: >1 keeps mids lower, improves contrast
     private let gamma: CGFloat = 1.25

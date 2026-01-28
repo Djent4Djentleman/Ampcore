@@ -20,6 +20,12 @@ extension CDTrack {
     @NSManaged public var lyrics: String?
     @NSManaged public var artworkData: Data?
     @NSManaged public var relativePath: String
+    @NSManaged public var rating: Int16
+    @NSManaged public var playCount: Int32
+    @NSManaged public var lastPlayedAt: Date?
+    @NSManaged public var genre: String?
+    @NSManaged public var year: Int16
+    @NSManaged public var isFavorite: Bool
 }
 
 @objc(CDPlaylist)
